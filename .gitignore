@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# IDE
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment variables
+.env
+
+# Deployment artifacts
+package/
+deployment_package.zip
+*.zip
+
+# ACME working directory (runtime only, not needed in source)
+.acme.sh/
+
+# Certificates (never commit these)
+*.cer
+*.key
+*.crt
+*.pem
+fullchain.cer
+certs/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
+nul

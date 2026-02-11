@@ -1,0 +1,77 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: TencentCloud::Serverless-2018-01-26
+Description: SSL Certificate Manager - Auto issue and deploy Let's Encrypt certificates
+
+Globals:
+  Function:
+    Timeout: 300
+    MemorySize: 512
+    Environment:
+      Variables:
+        TENCENT_SECRET_ID: {{ TENCENT_SECRET_ID }}
+        TENCENT_SECRET_KEY: {{ TENCENT_SECRET_KEY }}
+        TENCENT_REGION: ap-guangzhou
+        ACME_STAGING: 'false'
+        NOTIFY_ENABLED: 'false'
+
+Resources:
+  # 主函数：证书管理
+  CertificateManager:
+    Type: TencentCloud::Serverless::Function
+    Properties:
+      FunctionName: ssl-certificate-manager
+      FunctionDescription: SSL Certificate Manager - Issue and deploy Let's Encrypt certificates
+      CodeUri: ./
+      Handler: index.main_handler
+      Runtime: Python3.10
+      Timeout: 300
+      MemorySize: 512
+      Environment:
+        Variables:
+          TENCENT_SECRET_ID: {{ TENCENT_SECRET_ID }}
+          TENCENT_SECRET_KEY: {{ TENCENT_SECRET_KEY }}
+          TENCENT_REGION: ap-guangzhou
+          ACME_STAGING: 'false'
+
+  # 定时触发器：每日检查证书过期
+  DailyCheckTrigger:
+    Type: TencentCloud::Serverless::Timer
+    Properties:
+      FunctionName: ssl-certificate-manager
+      TriggerName: daily-certificate-check
+      TriggerDesc: Daily check for certificate expiration
+      Expression: '0 0 2 * * * *'  # 每天凌晨2点执行
+      Enable: true
+
+  # API 网关：手动触发证书操作
+  CertificateApi:
+    Type: TencentCloud::Serverless::Api
+    Properties:
+      ServiceName: ssl-certificate-api
+      Description: SSL Certificate Management API
+      StageName: release
+      ApiName: certificate-api
+      ApiDesc: Certificate management endpoints
+      HttpMethod: ANY
+      IsBase64Encoded: false
+      Function:
+        FunctionName: ssl-certificate-manager
+
+Outputs:
+  CertificateManager:
+    Description: Certificate Manager Function
+    Value:
+      Fn::GetAtt:
+        - CertificateManager
+        - FunctionName
+
+  ApiGatewayUrl:
+    Description: API Gateway URL
+    Value:
+      Fn::Join:
+        - ''
+        - - 'https://'
+          - Fn::GetAtt:
+              - CertificateApi
+              - ServiceId
+          - '.service.tcloudbase.com/release/'

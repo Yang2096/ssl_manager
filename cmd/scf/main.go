@@ -37,9 +37,9 @@ func Handler(ctx context.Context, event interface{}) (interface{}, error) {
 		// JSON unmarshaled event
 		if eventType, ok := e["Type"].(string); ok && eventType == "Timer" {
 			timerEvent = TimerEvent{
-				Type:        eventType,
+				// Type:        eventType,
 				TriggerName: getStringFromMap(e, "TriggerName"),
-				Time:        getStringFromMap(e, "Time"),
+				// Time:        getStringFromMap(e, "Time"),
 				Message:     getStringFromMap(e, "Message"),
 			}
 		} else {

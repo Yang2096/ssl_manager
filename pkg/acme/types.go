@@ -19,14 +19,6 @@ type CertificateResult struct {
 	ExpiresAt time.Time `json:"expires_at,omitempty"`
 }
 
-// DNSRecordCallback is the callback function for adding DNS records
-// Returns true if successful, false otherwise
-type DNSRecordCallback func(recordName, recordValue string) bool
-
-// DNSCleanupCallback is the callback function for cleaning up DNS records
-// Returns true if successful, false otherwise
-type DNSCleanupCallback func(recordName, recordValue string) bool
-
 // DNSRecord represents a DNS record for ACME challenge
 type DNSRecord struct {
 	RecordName  string `json:"record_name"`

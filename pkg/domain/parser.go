@@ -3,6 +3,8 @@ package domain
 import (
 	"fmt"
 	"strings"
+
+	"golang.org/x/net/publicsuffix"
 )
 
 // ParserResult represents the result of parsing a domain
@@ -12,13 +14,8 @@ type ParserResult struct {
 	SubDomain  string `json:"sub_domain"`
 }
 
-// Public suffixes that should be treated as a single unit
-var publicSuffixes = []string{
-	"com", "net", "org", "cn", "co.uk", "com.cn", "org.cn", "net.cn",
-	"gov.cn", "edu.cn", "ac.cn", "museum", "travel", "blog", "aero",
-}
-
 // ParseDomain parses a domain into main domain and subdomain
+// Uses golang.org/x/net/publicsuffix for accurate public suffix detection
 func ParseDomain(domain string) (*ParserResult, error) {
 	domain = strings.TrimSpace(domain)
 	if domain == "" {
@@ -28,52 +25,46 @@ func ParseDomain(domain string) (*ParserResult, error) {
 	// Remove any protocol prefix
 	domain = strings.TrimPrefix(domain, "http://")
 	domain = strings.TrimPrefix(domain, "https://")
-	domain = strings.TrimPrefix(domain, "www.")
-
-	parts := strings.Split(domain, ".")
-	if len(parts) < 2 {
-		return nil, fmt.Errorf("invalid domain: %s", domain)
-	}
-
-	var mainDomain, subDomain string
 
 	// Handle wildcard domains
+	// publicsuffix doesn't accept wildcard prefixes, so handle separately
 	if strings.HasPrefix(domain, "*.") {
-		mainDomain = strings.TrimPrefix(domain, "*.")
-		subDomain = "*"
-	} else if len(parts) == 2 {
-		// Simple domain like example.com
-		mainDomain = domain
-		subDomain = "@"
-	} else {
-		// Try to find public suffix
-		found := false
-		for _, suffix := range publicSuffixes {
-			suffixParts := strings.Split(suffix, ".")
-			if len(parts) > len(suffixParts) {
-				domainSuffix := strings.Join(parts[len(parts)-len(suffixParts):], ".")
-				if domainSuffix == suffix {
-					mainDomain = strings.Join(parts[len(parts)-len(suffixParts)-1:], ".")
-					if len(parts) > len(suffixParts)+1 {
-						subDomain = strings.Join(parts[:len(parts)-len(suffixParts)-1], ".")
-					} else {
-						subDomain = "@"
-					}
-					found = true
-					break
-				}
-			}
+		wildcardDomain := strings.TrimPrefix(domain, "*.")
+		mainDomain, err := publicsuffix.EffectiveTLDPlusOne(wildcardDomain)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse wildcard domain %s: %w", wildcardDomain, err)
 		}
 
-		if !found {
-			// Default: last two parts as main domain
-			mainDomain = strings.Join(parts[len(parts)-2:], ".")
-			if len(parts) > 2 {
-				subDomain = strings.Join(parts[:len(parts)-2], ".")
-			} else {
-				subDomain = "@"
-			}
+		var subDomain string
+		if wildcardDomain == mainDomain {
+			subDomain = "*"
+		} else {
+			// Extract subdomain part (everything before mainDomain)
+			// Note: The "*. prefix was already stripped, don't add it back
+			subDomain = strings.TrimSuffix(wildcardDomain, "."+mainDomain)
 		}
+
+		return &ParserResult{
+			Domain:     domain,
+			MainDomain: mainDomain,
+			SubDomain:  subDomain,
+		}, nil
+	}
+
+	// Get effective TLD+1 (main domain) using publicsuffix
+	// For "www.example.com" -> "example.com"
+	// For "api.b2b.example.co.uk" -> "example.co.uk"
+	mainDomain, err := publicsuffix.EffectiveTLDPlusOne(domain)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse domain %s: %w", domain, err)
+	}
+
+	// Extract subdomain by removing mainDomain from domain
+	var subDomain string
+	if domain == mainDomain {
+		subDomain = "@"
+	} else {
+		subDomain = strings.TrimSuffix(domain, "."+mainDomain)
 	}
 
 	return &ParserResult{
@@ -88,7 +79,7 @@ func IsWildcardDomain(domain string) bool {
 	return strings.HasPrefix(domain, "*.")
 }
 
-// ExtractBaseDomain extracts the base domain from a domain
+// ExtractBaseDomain extracts base domain from a domain
 func ExtractBaseDomain(domain string) (string, error) {
 	result, err := ParseDomain(domain)
 	if err != nil {
@@ -152,15 +143,20 @@ func SplitCertDomain(acmeChallengeDomain string) (string, string, error) {
 		return "", "", fmt.Errorf("invalid domain after removing ACME prefix: %s", acmeChallengeDomain)
 	}
 
-	// Get main domain
-	mainDomain := strings.Join(parts[len(parts)-2:], ".")
+	// Get main domain using publicsuffix
+	fullDomain := strings.Join(parts, ".")
+	mainDomain, err := publicsuffix.EffectiveTLDPlusOne(fullDomain)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to parse domain %s: %w", fullDomain, err)
+	}
 
 	// Get subdomain
 	var subDomain string
-	if len(parts) > 2 {
-		subDomain = strings.Join(parts[:len(parts)-2], ".")
-	} else {
+	if fullDomain == mainDomain {
 		subDomain = "_acme-challenge"
+	} else {
+		subDomain = strings.TrimSuffix(fullDomain, "."+mainDomain)
+		subDomain = "_acme-challenge." + subDomain
 	}
 
 	return mainDomain, subDomain, nil

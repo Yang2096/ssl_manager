@@ -17,6 +17,7 @@ import (
 
 	"github.com/go-acme/lego/v4/certificate"
 	"github.com/go-acme/lego/v4/challenge"
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/go-acme/lego/v4/lego"
 	"github.com/go-acme/lego/v4/registration"
 )
@@ -58,6 +59,8 @@ type ClientConfig struct {
 	AccountJSONPath     string
 	CertDir            string
 	DNSPropagation      time.Duration
+	DNSResolvers       []string        // Custom DNS resolvers
+	DNSTimeout         time.Duration  // DNS query timeout
 	KeySize            int
 	UserAgent          string
 }
@@ -72,6 +75,7 @@ func NewClientConfig(workDir, email string, staging bool) *ClientConfig {
 		AccountJSONPath: filepath.Join(workDir, "account.json"),
 		CertDir:        filepath.Join(workDir, "certs"),
 		DNSPropagation: DefaultDNSPropagation,
+			DNSTimeout:     10 * time.Second,
 		KeySize:        DefaultKeySize,
 		UserAgent:      "ssl-manager-go/1.0",
 	}
@@ -178,8 +182,6 @@ func (c *Client) SetDNSProvider(provider challenge.Provider) {
 func (c *Client) RequestCertificate(
 	ctx context.Context,
 	domains []string,
-	dnsCallback DNSRecordCallback,
-	dnsCleanup DNSCleanupCallback,
 ) (*CertificateResult, error) {
 	if len(domains) == 0 {
 		return nil, fmt.Errorf("no domains provided")
@@ -202,8 +204,23 @@ func (c *Client) RequestCertificate(
 
 	domain := domains[0]
 
-	// Set DNS provider for challenges
-	c.legoClient.Challenge.SetDNS01Provider(c.dnsProvider)
+	// Prepare DNS challenge options
+	var opts []dns01.ChallengeOption
+
+	// Configure custom DNS resolvers
+	if len(c.config.DNSResolvers) > 0 {
+		log.Printf("[ACME] Using custom DNS resolvers: %v", c.config.DNSResolvers)
+		opts = append(opts, dns01.AddRecursiveNameservers(c.config.DNSResolvers))
+	}
+
+	// Configure DNS query timeout
+	if c.config.DNSTimeout > 0 {
+		log.Printf("[ACME] Using DNS timeout: %v", c.config.DNSTimeout)
+		opts = append(opts, dns01.AddDNSTimeout(c.config.DNSTimeout))
+	}
+
+	// Set DNS provider for challenges with options
+	c.legoClient.Challenge.SetDNS01Provider(c.dnsProvider, opts...)
 
 	// Create certificate request
 	request := certificate.ObtainRequest{
@@ -281,8 +298,6 @@ func (c *Client) RenewCertificate(
 	ctx context.Context,
 	domain string,
 	certPEM, keyPEM []byte,
-	dnsCallback DNSRecordCallback,
-	dnsCleanup DNSCleanupCallback,
 ) (*CertificateResult, error) {
 	if err := c.InitClient(ctx); err != nil {
 		return &CertificateResult{
@@ -305,8 +320,23 @@ func (c *Client) RenewCertificate(
 		PrivateKey:  keyPEM,
 	}
 
-	// Set DNS provider for challenges
-	c.legoClient.Challenge.SetDNS01Provider(c.dnsProvider)
+	// Prepare DNS challenge options
+	var opts []dns01.ChallengeOption
+
+	// Configure custom DNS resolvers
+	if len(c.config.DNSResolvers) > 0 {
+		log.Printf("[ACME] Using custom DNS resolvers: %v", c.config.DNSResolvers)
+		opts = append(opts, dns01.AddRecursiveNameservers(c.config.DNSResolvers))
+	}
+
+	// Configure DNS query timeout
+	if c.config.DNSTimeout > 0 {
+		log.Printf("[ACME] Using DNS timeout: %v", c.config.DNSTimeout)
+		opts = append(opts, dns01.AddDNSTimeout(c.config.DNSTimeout))
+	}
+
+	// Set DNS provider for challenges with options
+	c.legoClient.Challenge.SetDNS01Provider(c.dnsProvider, opts...)
 
 	log.Printf("Renewing certificate for domain: %s", domain)
 

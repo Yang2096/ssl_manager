@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -30,7 +31,30 @@ func Load() (*Config, error) {
 	// DNS propagation
 	if propagation := getEnv("ACME_DNS_PROPAGATION", ""); propagation != "" {
 		if seconds, err := strconv.Atoi(propagation); err == nil {
+			log.Printf("got ACMEDNSPropagation : %d", seconds)
 			cfg.ACMEDNSPropagation = time.Duration(seconds) * time.Second
+		}
+	}
+
+	// DNS resolvers configuration (comma-separated list)
+	if resolvers := getEnv("ACME_DNS_RESOLVERS", ""); resolvers != "" {
+		servers := strings.Split(resolvers, ",")
+		for _, server := range servers {
+			server = strings.TrimSpace(server)
+			if server != "" {
+				cfg.ACMEDNSResolvers = append(cfg.ACMEDNSResolvers, server)
+			}
+		}
+		if len(cfg.ACMEDNSResolvers) > 0 {
+			log.Printf("Configured custom DNS resolvers: %v", cfg.ACMEDNSResolvers)
+		}
+	}
+
+	// DNS query timeout in seconds (optional, defaults to 10)
+	if timeout := getEnv("ACME_DNS_TIMEOUT", ""); timeout != "" {
+		if seconds, err := strconv.Atoi(timeout); err == nil && seconds > 0 {
+			cfg.ACMEDNSTimeout = time.Duration(seconds) * time.Second
+			log.Printf("Configured DNS timeout: %d seconds", seconds)
 		}
 	}
 

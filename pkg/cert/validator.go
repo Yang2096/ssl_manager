@@ -98,7 +98,7 @@ func (v *Validator) IsExpiringSoon(certPEM string) (bool, error) {
 		return false, err
 	}
 
-	remainingDays := int(cert.NotAfter.Sub(time.Now()).Hours() / 24)
+	remainingDays := int(time.Until(cert.NotAfter).Hours() / 24)
 	return remainingDays <= v.warningDays, nil
 }
 
@@ -109,7 +109,7 @@ func (v *Validator) GetRemainingDays(certPEM string) (int, error) {
 		return 0, err
 	}
 
-	return int(cert.NotAfter.Sub(time.Now()).Hours() / 24), nil
+	return int(time.Until(cert.NotAfter).Hours() / 24), nil
 }
 
 // GetExpirationDate returns the expiration date of a certificate

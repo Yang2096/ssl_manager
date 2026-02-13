@@ -48,20 +48,20 @@ make test
 
 ```bash
 # 申请证书并上传到腾讯云
-./ssl-manager issue cdn.example.com
+./build/cli issue cdn.example.com
 
 # 本地申请证书
-./ssl-manager issue-local cdn.example.com
+./build/cli issue-local cdn.example.com
 
 # 续期证书
-./ssl-manager renew cdn.example.com
+./build/cli renew cdn.example.com
 
 # 列出证书
-./ssl-manager list
+./build/cli list
 
 # 检查并续期
-./ssl-manager check
+./build/cli check
 
 # 上传已有证书
-./ssl-manager upload cdn.example.com
+./build/cli upload cdn.example.com
 ```

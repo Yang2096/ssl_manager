@@ -10,11 +10,13 @@ type Config struct {
 	TencentRegion    string
 
 	// ACME settings
-	ACMEServer      string
-	ACMEStaging     bool
-	ACMEHomeDir     string
-	ACMEAccountEmail string
+	ACMEServer         string
+	ACMEStaging        bool
+	ACMEHomeDir        string
+	ACMEAccountEmail   string
 	ACMEDNSPropagation time.Duration
+	ACMEDNSResolvers   []string        // Custom DNS resolvers (e.g., "8.8.8.8:53,1.1.1.1:53")
+	ACMEDNSTimeout     time.Duration  // DNS query timeout (default: 10 seconds)
 
 	// Certificate settings
 	CertKeySize             int
@@ -47,6 +49,7 @@ func DefaultConfig() *Config {
 		ACMEHomeDir:          "/tmp/acme",
 		ACMEAccountEmail:     "admin@example.com",
 		ACMEDNSPropagation:   60 * time.Second,
+		ACMEDNSTimeout:       10 * time.Second,
 		CertKeySize:          2048,
 		CertExpiryWarningDays: 30,
 		NotifyEnabled:        false,

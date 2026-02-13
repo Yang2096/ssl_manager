@@ -7,30 +7,34 @@ import (
 	"log"
 	"net/http"
 	"strconv"
-	"strings"
 	"time"
 
+	"github.com/go-acme/lego/v4/challenge/dns01"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/errors"
 	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common/profile"
 	dnspod "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dnspod/v20210323"
+
+	domainpkg "github.com/yang/ssl-manager/pkg/domain"
 )
 
 // TencentCloudProvider implements DNS provider using Tencent Cloud DNSPod API
 type TencentCloudProvider struct {
-	client    *dnspod.Client
-	secretID   string
-	secretKey   string
-	region      string
-	httpClient *http.Client
+	client             *dnspod.Client
+	secretID           string
+	secretKey          string
+	region             string
+	httpClient         *http.Client
+	propagationTimeout time.Duration
+	pollingInterval    time.Duration
 }
 
 // NewTencentCloudProvider creates a new Tencent Cloud DNS provider
-func NewTencentCloudProvider(secretID, secretKey, region string) (*TencentCloudProvider, error) {
+func NewTencentCloudProvider(secretID, secretKey, region string, propagationTimeout time.Duration) (*TencentCloudProvider, error) {
 	credential := common.NewCredential(secretID, secretKey)
 
 	cpf := profile.NewClientProfile()
-	cpf.HttpProfile.Endpoint = fmt.Sprintf("dnspod.tencentcloudapi.com")
+	cpf.HttpProfile.Endpoint = "dnspod.tencentcloudapi.com"
 
 	client, err := dnspod.NewClient(credential, region, cpf)
 	if err != nil {
@@ -38,10 +42,12 @@ func NewTencentCloudProvider(secretID, secretKey, region string) (*TencentCloudP
 	}
 
 	return &TencentCloudProvider{
-		client:    client,
-		secretID:  secretID,
-		secretKey:   secretKey,
-		region:     region,
+		client:             client,
+		secretID:           secretID,
+		secretKey:          secretKey,
+		region:             region,
+		propagationTimeout: propagationTimeout,
+		pollingInterval:    3 * time.Second,
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -151,7 +157,7 @@ func (p *TencentCloudProvider) GetTXTRecords(ctx context.Context, domain, subDom
 		}
 
 		var recordID, name, value, recordType, status string
-	var ttl int
+		var ttl int
 		var updatedOn time.Time
 
 		if record.RecordId != nil {
@@ -247,30 +253,53 @@ func (r TXTRecord) ToJSON() string {
 // Present implements challenge.Provider interface
 // Presents the ACME challenge DNS record
 func (p *TencentCloudProvider) Present(domain, token, keyAuth string) error {
-	// For ACME DNS-01 challenge, the record name is _acme-challenge.domain
-	// Extract the base domain and create the full record name
-	recordName := "_acme-challenge." + domain
-	// Split domain to get base domain and subdomain
-	baseDomain := extractBaseDomain(domain)
+	// Use correct domain parsing logic
+	parsed, err := domainpkg.ParseDomain(domain)
+	if err != nil {
+		return fmt.Errorf("failed to parse domain %s: %w", domain, err)
+	}
 
-	_, err := p.AddTXTRecord(context.Background(), baseDomain, recordName, keyAuth, 60)
+	baseDomain := parsed.MainDomain
+	var subDomain string
+	if parsed.SubDomain == "@" {
+		subDomain = "_acme-challenge"
+	} else {
+		subDomain = "_acme-challenge." + parsed.SubDomain
+	}
+
+	info := dns01.GetChallengeInfo(domain, keyAuth)
+
+	_, err = p.AddTXTRecord(context.Background(), baseDomain, subDomain, info.Value, 600)
 	return err
 }
 
 // CleanUp implements challenge.Provider interface
 // Removes the ACME challenge DNS record
 func (p *TencentCloudProvider) CleanUp(domain, token, keyAuth string) error {
-	recordName := "_acme-challenge." + domain
-	baseDomain := extractBaseDomain(domain)
+	// Use correct domain parsing logic
+	parsed, err := domainpkg.ParseDomain(domain)
+	if err != nil {
+		return fmt.Errorf("failed to parse domain %s: %w", domain, err)
+	}
+
+	baseDomain := parsed.MainDomain
+	var subDomain string
+	if parsed.SubDomain == "@" {
+		subDomain = "_acme-challenge"
+	} else {
+		subDomain = "_acme-challenge." + parsed.SubDomain
+	}
 
 	// Get existing records to find the one to delete
-	records, err := p.GetTXTRecords(context.Background(), baseDomain, recordName)
+	records, err := p.GetTXTRecords(context.Background(), baseDomain, subDomain)
 	if err != nil {
 		return err
 	}
 
+	info := dns01.GetChallengeInfo(domain, keyAuth)
+
 	for _, record := range records {
-		if record.Value == keyAuth {
+		if record.Value == info.Value {
 			return p.DeleteTXTRecord(context.Background(), baseDomain, record.ID)
 		}
 	}
@@ -278,12 +307,12 @@ func (p *TencentCloudProvider) CleanUp(domain, token, keyAuth string) error {
 	return nil
 }
 
-// extractBaseDomain extracts the base domain from a full domain name
-// e.g., "www.example.com" -> "example.com"
-func extractBaseDomain(domain string) string {
-	parts := strings.Split(domain, ".")
-	if len(parts) >= 2 {
-		return strings.Join(parts[len(parts)-2:], ".")
+// Timeout implements challenge.ProviderTimeout interface
+// Returns the timeout and polling interval for DNS propagation
+func (p *TencentCloudProvider) Timeout() (time.Duration, time.Duration) {
+	if p.propagationTimeout > 0 {
+		return p.propagationTimeout, p.pollingInterval
 	}
-	return domain
+	// Default values: 60 seconds timeout, 5 seconds interval
+	return 60 * time.Second, 3 * time.Second
 }

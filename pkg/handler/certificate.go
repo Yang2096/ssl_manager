@@ -44,6 +44,7 @@ func NewCertificateHandler(cfg *config.Config) (*CertificateHandler, error) {
 		cfg.TencentSecretID,
 		cfg.TencentSecretKey,
 		cfg.TencentRegion,
+		cfg.ACMEDNSPropagation,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create DNS provider: %w", err)
@@ -54,6 +55,11 @@ func NewCertificateHandler(cfg *config.Config) (*CertificateHandler, error) {
 
 	// Create ACME client
 	acmeConfig := acme.NewClientConfig(cfg.ACMEHomeDir, cfg.ACMEAccountEmail, cfg.ACMEStaging)
+
+	// Add DNS configuration
+	acmeConfig.DNSResolvers = cfg.ACMEDNSResolvers
+	acmeConfig.DNSTimeout = cfg.ACMEDNSTimeout
+
 	acmeClient, err := acme.NewClient(acmeConfig)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create ACME client: %w", err)
@@ -116,22 +122,6 @@ func (h *CertificateHandler) IssueCertificate(ctx context.Context, domain string
 	result, err := h.acmeClient.RequestCertificate(
 		ctx,
 		domains,
-		func(recordName, recordValue string) bool {
-			record, err := h.dnsHandler.AddValidationRecord(ctx, recordName, recordValue, 600)
-			if err != nil {
-				log.Printf("Failed to add DNS record: %v", err)
-				return false
-			}
-			return record != nil
-		},
-		func(recordName, recordValue string) bool {
-			record := h.dnsHandler.GetRecordByName(recordName)
-			if record == nil {
-				return false
-			}
-			err := h.dnsHandler.CleanupRecord(ctx, record)
-			return err == nil
-		},
 	)
 
 	if err != nil {
@@ -190,22 +180,6 @@ func (h *CertificateHandler) IssueCertificateLocal(ctx context.Context, domain s
 	result, err := h.acmeClient.RequestCertificate(
 		ctx,
 		domains,
-		func(recordName, recordValue string) bool {
-			record, err := h.dnsHandler.AddValidationRecord(ctx, recordName, recordValue, 600)
-			if err != nil {
-				log.Printf("Failed to add DNS record: %v", err)
-				return false
-			}
-			return record != nil
-		},
-		func(recordName, recordValue string) bool {
-			record := h.dnsHandler.GetRecordByName(recordName)
-			if record == nil {
-				return false
-			}
-			err := h.dnsHandler.CleanupRecord(ctx, record)
-			return err == nil
-		},
 	)
 
 	if err != nil {
@@ -271,22 +245,6 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, domain string
 	result, err := h.acmeClient.RequestCertificate(
 		ctx,
 		[]string{domain},
-		func(recordName, recordValue string) bool {
-			record, err := h.dnsHandler.AddValidationRecord(ctx, recordName, recordValue, 600)
-			if err != nil {
-				log.Printf("Failed to add DNS record: %v", err)
-				return false
-			}
-			return record != nil
-		},
-		func(recordName, recordValue string) bool {
-			record := h.dnsHandler.GetRecordByName(recordName)
-			if record == nil {
-				return false
-			}
-			err := h.dnsHandler.CleanupRecord(ctx, record)
-			return err == nil
-		},
 	)
 
 	if err != nil || !result.Success {

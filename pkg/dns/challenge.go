@@ -153,43 +153,6 @@ func (h *ChallengeHandler) CleanupRecords(ctx context.Context) error {
 	return nil
 }
 
-// VerifyDNSPropagation verifies that a DNS record has propagated
-func (h *ChallengeHandler) VerifyDNSPropagation(ctx context.Context, recordName, recordValue string) error {
-	log.Printf("Verifying DNS propagation for %s", recordName)
-
-	mainDomain, subDomain, err := h.extractDomain(recordName)
-	if err != nil {
-		return fmt.Errorf("failed to extract domain: %w", err)
-	}
-
-	timeout := h.dnsPropagation
-	checkInterval := 5 * time.Second
-	deadline := time.Now().Add(timeout)
-
-	for time.Now().Before(deadline) {
-		records, err := h.provider.GetTXTRecords(ctx, mainDomain, subDomain)
-		if err != nil {
-			log.Printf("DNS check failed: %v", err)
-		} else {
-			for _, record := range records {
-				if record.Value == recordValue {
-					log.Printf("DNS record propagated successfully")
-					return nil
-				}
-			}
-		}
-
-		log.Printf("DNS not yet propagated, waiting %s...", checkInterval)
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(checkInterval):
-		}
-	}
-
-	return fmt.Errorf("DNS propagation timeout for %s", recordName)
-}
-
 // GetRecordByName returns a tracked record by name
 func (h *ChallengeHandler) GetRecordByName(recordName string) *ChallengeRecord {
 	h.mu.Lock()

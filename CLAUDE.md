@@ -166,9 +166,9 @@ ssl-manager/
 | 方法 | 功能 |
 |---|---|
 | `IssueCertificate(ctx, domain, extraDomains)` | 申请证书并上传到腾讯云 |
-| `IssueCertificateLocal(ctx, domain, extraDomains)` | 本地申请证书（不上传） |
+| `IssueCertificateLocal(ctx, domain, extraDomains)` | 本地申请证书（不上传），返回证书路径和 PEM 内容 |
 | `RenewCertificate(ctx, domain, force)` | 续期证书 |
-| `ListCertificates(ctx)` | 列出证书 |
+| `ListCertificates(ctx, searchDomain)` | 列出证书 |
 | `UploadCertificate(ctx, domain, certDir)` | 上传已有证书 |
 | `DeployCertificate(ctx, domain, resourceType, resourceIDs)` | 部署证书 |
 | `CheckAndRenew(ctx)` | 检查并自动续期 |
@@ -202,7 +202,6 @@ ssl-manager/
 | Action | 功能 | 参数 |
 |---|---|
 | `issue` | 申请新证书并上传到腾讯云 | `domain`, `staging` |
-| `issue-local` | 本地申请证书（不上传） | `domain`, `extraDomains` |
 | `renew` | 续期证书 | `domain`, `force` |
 | `deploy` | 部署证书到云资源 | `domain`, `resourceType`, `resourceIds` |
 | `list` | 列出证书 | `domain`（可选） |
@@ -233,12 +232,15 @@ make scf-package       # 打包 SCF 部署包
 
 # 证书管理
 ./ssl-manager issue cdn.example.com           # 申请证书并上传到腾讯云
-./ssl-manager issue-local cdn.example.com      # 本地申请证书
+./ssl-manager issue-local cdn.example.com      # 本地申请证书（不上传）
+./ssl-manager issue-local cdn.example.com --email admin@example.com  # 指定邮箱
 ./ssl-manager renew cdn.example.com           # 续期证书
 ./ssl-manager renew cdn.example.com --force   # 强制续期
 ./ssl-manager list                            # 列出证书
+./ssl-manager list cdn.example.com            # 查询指定域名
 ./ssl-manager check                           # 检查并续期
 ./ssl-manager upload cdn.example.com          # 上传已有证书
+./ssl-manager upload cdn.example.com --cert-dir /path/to/certs  # 指定证书目录
 ```
 
 ## 配置说明

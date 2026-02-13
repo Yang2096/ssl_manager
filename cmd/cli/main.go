@@ -10,6 +10,7 @@ import (
 
 	"github.com/yang/ssl-manager/pkg/config"
 	"github.com/yang/ssl-manager/pkg/handler"
+	"github.com/yang/ssl-manager/pkg/ssl"
 )
 
 // Version is set during build
@@ -203,39 +204,26 @@ func (c *CLI) listCommand(args []string) {
 
 	fmt.Printf("Found %d certificate(s)\n\n", result.Total)
 
-	// Type assert for certificate list ([]map[string]interface{})
-	certList, ok := result.Items.([]map[string]interface{})
+	// Type assert for certificate list ([]ssl.CertificateInfo)
+	certList, ok := result.Items.([]ssl.CertificateInfo)
 	if !ok {
 		log.Fatalf("Invalid certificate list format")
 	}
 
 	for i, cert := range certList {
-		domain := getStringVal(cert, "Domain")
-		certID := getStringVal(cert, "CertificateId")
-		statusName := getStringVal(cert, "StatusName")
-		isWildcard := getBoolVal(cert, "IsWildcard")
-		isDv := getBoolVal(cert, "IsDv")
-		isVip := getBoolVal(cert, "IsVip")
-		certEndTime := getStringVal(cert, "CertEndTime")
-		alias := getStringVal(cert, "Alias")
-		remainingDays := 0
-		if v, ok := cert["RemainingDays"].(int); ok {
-			remainingDays = v
-		}
-
-		fmt.Printf("[%d] %s\n", i+1, domain)
-		fmt.Printf("    Certificate ID: %s\n", certID)
-		fmt.Printf("    Status: %s\n", statusName)
+		fmt.Printf("[%d] %s\n", i+1, cert.Domain)
+		fmt.Printf("    Certificate ID: %s\n", cert.CertificateID)
+		fmt.Printf("    Status: %s\n", cert.StatusName)
 
 		// Show certificate type
 		var types []string
-		if isWildcard {
+		if cert.IsWildcard {
 			types = append(types, "Wildcard")
 		}
-		if isDv {
+		if cert.IsDv {
 			types = append(types, "DV")
 		}
-		if isVip {
+		if cert.IsVip {
 			types = append(types, "VIP")
 		}
 		if len(types) > 0 {
@@ -243,32 +231,17 @@ func (c *CLI) listCommand(args []string) {
 		}
 
 		// Show expiry information
-		if remainingDays > 0 {
-			fmt.Printf("    Expires: %s (%d days remaining)\n", certEndTime, remainingDays)
-		} else if remainingDays == 0 && certEndTime != "" {
-			fmt.Printf("    Expires: %s (expired)\n", certEndTime)
+		if cert.RemainingDays > 0 {
+			fmt.Printf("    Expires: %s (%d days remaining)\n", cert.CertEndTime, cert.RemainingDays)
+		} else if cert.RemainingDays == 0 && cert.CertEndTime != "" {
+			fmt.Printf("    Expires: %s (expired)\n", cert.CertEndTime)
 		}
 
-		if alias != "" {
-			fmt.Printf("    Alias: %s\n", alias)
+		if cert.Alias != "" {
+			fmt.Printf("    Alias: %s\n", cert.Alias)
 		}
 		fmt.Println()
 	}
-}
-
-// Helper functions for CLI
-func getStringVal(m map[string]interface{}, key string) string {
-	if v, ok := m[key].(string); ok {
-		return v
-	}
-	return ""
-}
-
-func getBoolVal(m map[string]interface{}, key string) bool {
-	if v, ok := m[key].(bool); ok {
-		return v
-	}
-	return false
 }
 
 func (c *CLI) checkCommand(args []string) {

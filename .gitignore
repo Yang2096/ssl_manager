@@ -59,3 +59,7 @@ certs/
 .DS_Store
 Thumbs.db
 nul
+
+
+cli.exe
+scf.exe

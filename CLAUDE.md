@@ -4,83 +4,192 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-这是一个部署在腾讯云 SCF（云函数）的自动化 Let's Encrypt 证书管理项目。使用**纯 Python ACMEv2 实现**（无 Shell 脚本依赖），通过 DNS-01 挑战配合 DNSPod API 申请证书，然后上传到腾讯云 SSL 证书服务，可部署到 CDN、CLB、API 网关等资源。
+这是一个部署在腾讯云 SCF（云函数）的自动化 Let's Encrypt 证书管理项目。使用**纯 Go ACMEv2 实现**（基于 go-acme/lego），通过 DNS-01 挑战配合 DNSPod API 申请证书，然后上传到腾讯云 SSL 证书服务，可部署到 CDN、CLB、API 网关等资源。
 
 ## 核心架构
 
 ```
-index.py (SCF 入口)
+cmd/scf/main.go (SCF 入口)
+cmd/cli/main.go (CLI 入口)
     ↓
-acme_handler.py (AcmeCertificateHandler - 对外 API)
+pkg/handler/certificate.go (CertificateHandler - 核心业务逻辑)
     ↓
-acme_client.py (PureACMEClient - ACMEv2 协议实现)
-dns_challenge.py (DNSChallengeHandler - DNSPod 集成)
-cert_checker.py (CertificateExpiryChecker - 自动续期逻辑)
-
-支撑模块:
-- dns_handler.py → DNSPodV3Handler (DNS API，2021-03-23 版本)
-- tencent_ssl.py → TencentSSLHandler (SSL 证书 API)
-- config.py → Config, AcmeConfig
-- utils.py → DomainParser, CertificateUtils, NotificationHandler
+pkg/acme/ (ACMEv2 协议实现 - 基于 lego)
+pkg/dns/ (DNS-01 挑战处理 - DNSPod 集成)
+pkg/cert/ (证书存储、验证、过期检查)
+pkg/ssl/ (腾讯云 SSL 证书服务)
+pkg/config/ (配置管理)
+pkg/domain/ (域名解析)
+pkg/notify/ (Webhook 通知)
+pkg/response/ (API 响应封装)
 ```
 
-### ACME 证书申请流程（纯 Python）
+### 目录结构
 
-1. **PureACMEClient.request_certificate()** 协调整个流程
-2. 通过 `ACMEOrder` 创建 ACME 订单
-3. 通过 `DNS01Challenge.get_dns_challenges()` 获取 DNS 挑战
-4. 对每个挑战：
-   - 调用 `dns_record_callback(record_name, record_value)` → 通过 DNSPodV3Handler 添加 TXT 记录
-   - 等待 DNS 传播（可配置，默认 60 秒）
-   - 通过 `DNS01Challenge.answer_challenge()` 回答挑战
-   - 通过 `DNS01Challenge.poll_authorization()` 轮询授权状态
-   - 调用 `dns_cleanup_callback()` → 删除 TXT 记录
-5. 通过 `CertificateManager` 生成私钥和 CSR
-6. 完成订单并下载证书
-7. 保存到 `/tmp/acme/{domain}/` 目录为 `fullchain.pem` 和 `privkey.pem`
+```
+ssl-manager/
+├── cmd/
+│   ├── scf/          # SCF 云函数入口
+│   └── cli/          # CLI 工具入口
+├── pkg/
+│   ├── acme/         # ACME 客户端封装 (基于 lego)
+│   ├── cert/         # 证书存储、解析、验证
+│   ├── config/       # 配置加载和验证
+│   ├── dns/          # DNS 挑战处理 (DNSPod)
+│   ├── domain/       # 域名解析和处理
+│   ├── notify/       # Webhook 通知
+│   ├── response/     # API 响应结构
+│   └── ssl/          # 腾讯云 SSL 服务客户端
+├── Makefile          # 构建脚本
+├── go.mod
+└── go.sum
+```
 
-### DNSPodV3Handler 详情
+## 核心模块说明
 
-`dns_handler.py` 提供 DNSPod API V3 客户端：
+### pkg/acme - ACME 客户端
 
-| 类 | API 版本 | 实现方式 |
-|---|---|---|
-| `DNSPodV3Handler` | 2021-03-23 | 腾讯云官方 SDK (tencentcloud-sdk-python) |
+| 文件 | 功能 |
+|------|------|
+| `types.go` | ACME 用户、证书结果等类型定义 |
+| `user.go` | ACME 用户实现 (lego.User 接口) |
+| `client.go` | ACME 客户端封装 |
 
-**DNSPodV3Handler 关键方法：**
-- `add_txt_record(domain, sub_domain, value)` - 添加 TXT 记录，返回记录 ID
-- `delete_dns_record(domain, record_id)` - 删除指定 ID 的记录
-- `get_dns_records(domain, subdomain)` - 查询记录列表
+**Client 关键方法：**
+- `RequestCertificate(ctx, domains, addCallback, cleanupCallback)` - 申请证书
+- `SetDNSProvider(provider)` - 设置 DNS 提供商
 
-### TencentSSLHandler 详情
+### pkg/dns - DNS 挑战处理
 
-`tencent_ssl.py` 提供腾讯云 SSL 证书服务客户端：
+| 文件 | 功能 |
+|------|------|
+| `provider.go` | DNS Provider 接口定义 |
+| `tencentcloud.go` | DNSPod Provider 实现 |
+| `challenge.go` | DNS-01 挑战处理器 |
 
-**TencentSSLHandler 关键方法：**
+**ChallengeHandler 关键方法：**
+- `AddValidationRecord(ctx, name, value, ttl)` - 添加 DNS 验证记录
+- `CleanupRecord(ctx, record)` - 清理 DNS 记录
+- `CleanupRecords(ctx)` - 清理所有记录
+- `GetRecordByName(name)` - 根据名称获取记录
+
+**TencentCloudProvider 实现：**
+- 使用腾讯云 SDK 操作 DNSPod API
+- `Present(domain, token, keyAuth)` - 添加 TXT 记录
+- `CleanUp(domain, token, keyAuth)` - 删除 TXT 记录
+
+### pkg/ssl - 腾讯云 SSL 服务
+
+| 文件 | 功能 |
+|------|------|
+| `client.go` | SSL 服务客户端 |
+| `certificate.go` | 证书操作 (上传、查询、删除) |
+| `scf.go` | SCF 部署相关 |
+| `deployment.go` | 证书部署到云资源 |
+
+**Client 关键方法：**
 | 方法 | 功能 |
 |---|---|
-| `upload_certificate(cert_pem, key_pem)` | 上传证书到腾讯云（仅支持证书和私钥内容） |
-| `get_certificate_list(limit, offset, search_key)` | 获取证书列表 |
-| `get_certificate_by_domain(domain)` | 根据域名查询证书 |
-| `get_certificate_id(domain)` | 根据域名获取证书 ID |
-| `delete_certificate(cert_id)` | 删除证书 |
-| `deploy_certificate(cert_id, resource_type, resource_ids, domain)` | 部署证书到云资源 |
-| `deploy_to_cdn(cert_id, domain)` | 部署证书到 CDN |
-| `deploy_to_clb(cert_id, listener_ids)` | 部署证书到负载均衡 |
-| `update_certificate(old_cert_id, cert_pem, key_pem, alias)` | 更新证书内容 |
-| `check_certificate_status(cert_id)` | 检查证书状态 |
-| `replace_certificate(cert_id, resource_type, resource_ids)` | 替换资源的证书 |
+| `UploadCertificate(ctx, certPEM, keyPEM)` | 上传证书到腾讯云 |
+| `GetCertificateList(ctx, limit, offset, searchKey)` | 获取证书列表 |
+| `GetCertificateByDomain(ctx, domain)` | 根据域名查询证书 |
+| `GetCertificateID(ctx, domain)` | 根据域名获取证书 ID |
+| `DeleteCertificate(ctx, certID)` | 删除证书 |
 
-**注意：** `UploadCertificate` API 仅支持 `CertificatePublicKey` 和 `CertificatePrivateKey` 两个参数，不支持 `CertificateAlias` 和 `CertificateNote`。
+**DeploymentOperations 关键方法：**
+| 方法 | 功能 |
+|---|---|
+| `Deploy(ctx, certID, resourceType, resourceIDs, domain)` | 部署证书到云资源 |
+| `DeployToCDN(ctx, certID, domain)` | 部署到 CDN |
+| `DeployToCLB(ctx, certID, listenerIDs)` | 部署到负载均衡 |
 
 **支持的资源类型：**
 `clb`, `cdn`, `waf`, `live`, `ddos`, `teo`, `apigateway`, `vod`, `tke`, `tcb`, `tse`, `cos`, `scf`
 
-### API 接口
+**CertificateOperations 关键方法：**
+| 方法 | 功能 |
+|---|---|
+| `Upload(ctx, certPEM, keyPEM)` | 上传证书 |
+| `GetByDomain(ctx, domain)` | 根据域名获取证书 |
+| `GetID(ctx, domain)` | 根据域名获取证书 ID |
+| `Delete(ctx, certID)` | 删除证书 |
+| `CheckStatus(ctx, certID)` | 检查证书状态 |
+| `Update(ctx, oldCertID, certPEM, keyPEM, alias)` | 更新证书 |
+| `List(ctx, limit, offset, searchKey)` | 列出证书 |
 
-`index.py` 的 `main_handler` 支持三种触发方式：
+**证书验证函数：**
+- `ValidateCertificate(certPEM, keyPEM)` - 验证证书和私钥格式
 
-- **定时触发器**：`check_and_renew()` - 自动续期即将过期证书
+### pkg/domain - 域名解析
+
+| 文件 | 功能 |
+|------|------|
+| `parser.go` | 域名解析和处理 |
+
+**关键函数：**
+- `ParseDomain(domain)` - 解析域名为主域名和子域名
+- `IsWildcardDomain(domain)` - 检查是否为通配符域名
+- `ExtractBaseDomain(domain)` - 提取基础域名
+- `GetDNSRecordName(domain)` - 获取 DNS 记录名称
+- `NormalizeDomain(domain)` - 规范化域名
+- `GetAcmeChallengeDomain(domain)` - 获取 ACME 挑战域名
+
+### pkg/cert - 证书处理
+
+| 文件 | 功能 |
+|------|------|
+| `storage.go` | 证书文件存储 |
+| `parser.go` | 证书解析 |
+| `validator.go` | 证书验证 |
+| `expiry.go` | 过期检查 |
+
+**CertificateStorage 关键方法：**
+- `SaveCertificate(ctx, domain, certPEM, keyPEM)` - 保存证书和私钥
+- `SaveCSR(ctx, domain, csrPEM)` - 保存 CSR
+- `LoadCertificate(ctx, domain)` - 加载证书
+- `LoadPrivateKey(ctx, domain)` - 加载私钥
+- `LoadBoth(ctx, domain)` - 同时加载证书和私钥
+- `DomainExists(ctx, domain)` - 检查证书是否存在
+- `DeleteDomain(ctx, domain)` - 删除证书
+- `ListDomains(ctx)` - 列出所有域名
+- `GetCertPath(domain)` - 获取证书文件路径
+- `GetKeyPath(domain)` - 获取私钥文件路径
+
+**ExpiryChecker 关键方法：**
+- `CheckAllCertificates(ctx, sslClient)` - 检查所有证书过期状态
+- `CheckCertificate(ctx, certMap)` - 检查单个证书
+
+### pkg/handler - 业务逻辑处理
+
+**CertificateHandler 核心方法：**
+
+| 方法 | 功能 |
+|---|---|
+| `IssueCertificate(ctx, domain, extraDomains)` | 申请证书并上传到腾讯云 |
+| `IssueCertificateLocal(ctx, domain, extraDomains)` | 本地申请证书（不上传） |
+| `RenewCertificate(ctx, domain, force)` | 续期证书 |
+| `ListCertificates(ctx)` | 列出证书 |
+| `UploadCertificate(ctx, domain, certDir)` | 上传已有证书 |
+| `DeployCertificate(ctx, domain, resourceType, resourceIDs)` | 部署证书 |
+| `CheckAndRenew(ctx)` | 检查并自动续期 |
+
+## ACME 证书申请流程
+
+1. **CertificateHandler.IssueCertificate()** 协调整个流程
+2. 通过 **acme.Client** 创建 ACME 客户端 (基于 lego)
+3. 调用 **RequestCertificate()** 发起证书申请：
+   - 通过 DNS Provider 添加 TXT 记录 (`Present()`)
+   - 等待 DNS 传播（可配置，默认 60 秒）
+   - lego 自动完成挑战验证
+   - 清理 DNS 记录 (`CleanUp()`)
+4. 保存证书到 `{ACME_HOME_DIR}/certs/{domain}/` 目录
+5. 调用 **ssl.Client.UploadCertificate()** 上传到腾讯云
+
+## API 接口 (SCF 入口)
+
+`cmd/scf/main.go` 的 `Handler` 支持三种触发方式：
+
+- **定时触发器**：`check` - 自动续期即将过期证书
 - **API 网关**：REST 接口
   - `POST /certificate/issue` - 申请新证书并上传到腾讯云
   - `POST /certificate/renew` - 续期证书
@@ -91,94 +200,107 @@ cert_checker.py (CertificateExpiryChecker - 自动续期逻辑)
 ### 可用操作（Actions）
 
 | Action | 功能 | 参数 |
-|---|---|---|
+|---|---|
 | `issue` | 申请新证书并上传到腾讯云 | `domain`, `staging` |
-| `issue-local` | 本地申请证书（不上传） | `domain`, `email`, `production`, `work-dir` |
+| `issue-local` | 本地申请证书（不上传） | `domain`, `extraDomains` |
 | `renew` | 续期证书 | `domain`, `force` |
 | `deploy` | 部署证书到云资源 | `domain`, `resourceType`, `resourceIds` |
 | `list` | 列出证书 | `domain`（可选） |
 | `check` | 检查并自动续期即将过期证书 | 无 |
 | `upload` | 上传已有证书到腾讯云 | `domain`, `certDir`（可选） |
 
-### 核心函数
+### 证书存储路径
 
-| 函数 | 功能 |
-|---|---|
-| `issue_new_certificate(domain, staging)` | 申请证书并上传到腾讯云 SSL 服务 |
-| `issue_certificate_local(domain, email, staging, work_dir)` | 本地申请证书，保存到 `./certs/{domain}/` |
-| `renew_certificate(domain, force)` | 续期证书 |
-| `deploy_certificate(domain, resource_type, resource_ids)` | 部署证书到云资源 |
-| `list_certificates(domain)` | 列出证书 |
-| `upload_existing_certificate(domain, cert_dir)` | 上传已有证书到腾讯云 |
-| `check_and_renew()` | 定时任务入口，检查并自动续期 |
+证书文件存储在 `{ACME_HOME_DIR}/certs/{domain}/` 目录：
 
-## 开发命令
-
-```bash
-# 安装依赖
-pip install -r requirements.txt
-
-# 运行测试
-python test.py
-
-# 证书管理命令
-python index.py issue-local cdn.example.com              # 本地申请证书（测试环境）
-python index.py issue-local cdn.example.com --email user@example.com  # 指定邮箱
-python index.py issue-local cdn.example.com --production # 使用生产环境
-python index.py issue cdn.example.com                    # 申请并上传到腾讯云
-python index.py upload cdn.example.com                  # 上传已有证书到腾讯云
-python index.py renew cdn.example.com                    # 续期证书
-python index.py renew cdn.example.com --force            # 强制续期
-python index.py list                                      # 列出证书
-python index.py check                                     # 检查并续期即将过期的证书
-
-# 创建部署包
-./deploy.sh package   # Windows 使用 ./deploy.ps1
+```
+{ACME_HOME_DIR}/
+├── accounts/           # ACME 账户密钥
+└── certs/
+    └── {domain}/       # 按域名分类
+        ├── fullchain.pem   # 完整证书链
+        ├── privkey.pem     # 私钥
+        └── cert.csr        # 证书签名请求
 ```
 
-## 重要说明
+## CLI 命令
 
-### 纯 Python 实现
-- **无 acme.sh 依赖** - 使用 Certbot 官方的 `acme` 和 `josepy` 库
-- 账户密钥存储：`/tmp/acme/account_key.pem`（SCF 环境）
-- 证书存储位置：
-  - **SCF 环境**：`/tmp/acme/{domain}/fullchain.pem` 和 `privkey.pem`
-  - **本地开发**：`./certs/{domain}/fullchain.pem` 和 `privkey.pem`
+```bash
+# 构建
+make cli               # 构建 CLI 工具
+make scf               # 构建 SCF 二进制
+make scf-package       # 打包 SCF 部署包
 
-### DNS 挑战处理器
-- `dns_challenge.py` 提供 `DNSChallengeCallback` 适配器
-- 集成 `DNSPodV3Handler`（使用 2021-03-23 API 版本，TC3-HMAC-SHA256 签名）
-- 自动从 `_acme-challenge.sub.example.com` 提取主域名
-
-### SCF 环境约束
-- **超时限制**：SCF 最大 300 秒，典型证书申请需 40-90 秒
-- **工作目录**：使用 `/tmp/acme` 存储临时文件
-- **冷启动**：首次运行会生成账户密钥，缓存在 `/tmp/acme/`
-
-### Let's Encrypt 限制
-- 生产环境：每周每域名最多 5 个证书
-- 测试环境（staging）：无限制（设置 `ACME_STAGING=true` 或参数 `staging=true`）
-- 建议设置 `ACME_ACCOUNT_EMAIL` 环境变量以接收证书过期提醒
-
-### 腾讯云 SDK 使用规范
-使用腾讯云 SDK 时，**必须**参考官方 API 文档获取请求和返回字段的具体格式：
-- SSL 证书服务：https://cloud.tencent.com/document/product/400/41681
-- DNSPod API：https://cloud.tencent.com/document/product/1427/56194
-
-**关键要点：**
-- 使用 `getattr(obj, 'field', default)` 安全访问字段，避免 API 返回格式变化导致异常
-- SDK 返回的对象属性需要转换为字典才能 JSON 序列化
-- `Credential` 从 `tencentcloud.common.credential` 导入，不是各服务的 models 模块
+# 证书管理
+./ssl-manager issue cdn.example.com           # 申请证书并上传到腾讯云
+./ssl-manager issue-local cdn.example.com      # 本地申请证书
+./ssl-manager renew cdn.example.com           # 续期证书
+./ssl-manager renew cdn.example.com --force   # 强制续期
+./ssl-manager list                            # 列出证书
+./ssl-manager check                           # 检查并续期
+./ssl-manager upload cdn.example.com          # 上传已有证书
+```
 
 ## 配置说明
 
-必需的环境变量（在 SCF 控制台或本地 `.env` 文件配置）：
-- `TENCENT_SECRET_ID`、`TENCENT_SECRET_KEY` - 腾讯云凭据（用于 DNSPod V3 API 和 SSL 证书服务）
-- `TENCENT_REGION` - 默认：`ap-guangzhou`
+### 环境变量
 
-可选配置：
-- `ACME_ACCOUNT_EMAIL` - 默认：`admin@example.com`
-- `ACME_HOME_DIR` - 默认：`/tmp/acme`
-- `ACME_DNS_PROPAGATION` - DNS 传播等待时间（秒），默认：`60`
-- `ACME_STAGING` - 使用 Let's Encrypt 测试环境，默认：`false`
-- `NOTIFY_ENABLED`、`NOTIFY_WEBHOOK` - Webhook 通知
+| 变量 | 说明 | 默认值 |
+|------|------|--------|
+| `TENCENT_SECRET_ID` | 腾讯云 Secret ID | (必需) |
+| `TENCENT_SECRET_KEY` | 腾讯云 Secret Key | (必需) |
+| `TENCENT_REGION` | 地域 | `ap-guangzhou` |
+| `ACME_ACCOUNT_EMAIL` | ACME 账户邮箱 | `admin@example.com` |
+| `ACME_HOME_DIR` | 证书存储根目录 | `/tmp/acme` |
+| `ACME_DNS_PROPAGATION` | DNS 传播等待时间(秒) | `60` |
+| `ACME_STAGING` | 使用 Let's Encrypt 测试环境 | `false` |
+| `CERT_EXPIRY_WARNING_DAYS` | 证书过期预警天数 | `30` |
+| `NOTIFY_ENABLED` | 启用 Webhook 通知 | `false` |
+| `NOTIFY_WEBHOOK` | Webhook URL | - |
+
+### SCF 环境约束
+
+- **超时限制**：SCF 最大 300 秒，典型证书申请需 40-90 秒
+- **工作目录**：证书存储在 `{ACME_HOME_DIR}/certs/{domain}/`，默认 `/tmp/acme/certs/{domain}/`
+- **冷启动**：首次运行会生成账户密钥，缓存在 `/tmp/acme/`
+
+### 证书存储结构
+
+| 环境 | 证书路径 |
+|------|----------|
+| **SCF 云函数** | `/tmp/acme/certs/{domain}/fullchain.pem` |
+| **SCF 云函数** | `/tmp/acme/certs/{domain}/privkey.pem` |
+| **本地 CLI** | 由 `ACME_HOME_DIR` 环境变量指定 |
+
+### Let's Encrypt 限制
+
+- 生产环境：每周每域名最多 5 个证书
+- 测试环境（staging）：无限制（设置 `ACME_STAGING=true`）
+- 建议设置 `ACME_ACCOUNT_EMAIL` 环境变量以接收证书过期提醒
+
+### 腾讯云 SDK 使用
+
+使用腾讯云 Go SDK 时参考官方 API 文档：
+- SSL 证书服务：https://cloud.tencent.com/document/product/400/41681
+- DNSPod API：https://cloud.tencent.com/document/product/1427/56194
+
+**Go SDK 使用要点：**
+- 使用 `tencentcloud/common/profile` 构建请求
+- 使用 `tencentcloud/common/region` 选择地域
+- 返回值通过类型断言获取具体字段
+
+## 依赖
+
+- `github.com/go-acme/lego/v4` - ACMEv2 协议实现
+- `github.com/tencentcloud/tencentcloud-sdk-go` - 腾讯云 Go SDK
+
+## 构建目标
+
+| 目标 | 说明 |
+|------|------|
+| `make deps` | 下载依赖 |
+| `make cli` | 构建 CLI 二进制 |
+| `make scf` | 构建 SCF 二进制 (Linux) |
+| `make scf-package` | 打包 SCF 部署包 |
+| `make test` | 运行测试 |
+| `make clean` | 清理构建文件 |

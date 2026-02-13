@@ -1,0 +1,5 @@
+#!/bin/bash
+# Build Time: ${BUILD_TIME}
+# Git Revision: ${GIT_REVISION}
+
+./scf

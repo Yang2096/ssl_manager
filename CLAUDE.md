@@ -136,15 +136,14 @@ ssl-manager/
 | `IsEnabled()` | 检查客户端是否可用 |
 | `UploadCertificate(ctx, name, commonName, privateKey, certChain)` | 上传证书到七牛 |
 | `ListCertificates(ctx)` | 获取证书列表 |
-| `GetCertificateByDomain(ctx, domain)` | 根据域名查找证书 |
-| `IsDomainOnQiniu(ctx, domain)` | 检查域名是否在七牛上使用 |
-| `DeleteCertificate(ctx, certID)` | 删除证书 |
+| `GetCertificatesByDomain(ctx, domain)` | 根据域名查找证书列表 |
+| `Delete(ctx, certID)` | 删除证书 |
 
 **七牛证书同步流程：**
 1. 检查七牛客户端是否配置（`QINIU_ACCESS_KEY` 和 `QINIU_SECRET_KEY`）
-2. 调用 `IsDomainOnQiniu()` 检查域名是否在七牛上使用（通过检查证书列表的 DNSNames）
-3. 如果在七牛上，上传新证书
-4. 删除旧的七牛证书（如果存在）
+2. 调用 `GetCertificatesByDomain()` 查找该域名的证书，若结果为空则跳过同步
+3. 上传新证书到七牛
+4. 如果存在 2 个及以上旧证书，删除最旧的一个
 
 ### pkg/domain - 域名解析
 
@@ -287,7 +286,6 @@ make scf-package       # 打包 SCF 部署包
 | `NOTIFY_WEBHOOK` | Webhook URL | - |
 | `QINIU_ACCESS_KEY` | 七牛云 AccessKey（可选） | - |
 | `QINIU_SECRET_KEY` | 七牛云 SecretKey（可选） | - |
-| `SSL_UPDATE_CONFIG_DEFAULT` | 全局默认证书更新资源配置（JSON 数组） | 所有支持的资源类型 |
 | `SSL_UPDATE_CONFIG_{DOMAIN}` | 域名特定的证书更新资源配置（JSON 数组） | - |
 
 ### 证书更新资源配置
@@ -309,11 +307,6 @@ make scf-package       # 打包 SCF 部署包
 ]
 ```
 
-#### 配置优先级
-
-1. 域名特定配置 `SSL_UPDATE_CONFIG_{DOMAIN}`（如 `SSL_UPDATE_CONFIG_CDN_EXAMPLE_COM`）
-2. 全局默认配置 `SSL_UPDATE_CONFIG_DEFAULT`
-3. 内置默认值（所有支持的资源类型）
 
 #### 支持的资源类型
 
@@ -335,9 +328,6 @@ make scf-package       # 打包 SCF 部署包
 #### 配置示例
 
 ```bash
-# 全局默认配置（所有域名通用）
-SSL_UPDATE_CONFIG_DEFAULT=[{"type":"cdn"},{"type":"clb","regions":["ap-guangzhou"]}]
-
 # 域名特定配置（支持多级域名）
 SSL_UPDATE_CONFIG_WWW_EXAMPLE_COM=[{"type":"cdn"}]
 

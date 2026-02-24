@@ -400,23 +400,20 @@ func (h *CertificateHandler) syncToQiniu(ctx context.Context, domain, certPEM, k
 		return ""
 	}
 
-	// Check if domain is on Qiniu
-	isOnQiniu, err := h.qiniuClient.IsDomainOnQiniu(ctx, domain)
+	// Get all existing certificates for this domain to check if it's on Qiniu
+	existingCerts, err := h.qiniuClient.GetCertificatesByDomain(ctx, domain)
 	if err != nil {
-		log.Printf("[Qiniu] Warning: Failed to check if domain is on Qiniu: %v", err)
+		log.Printf("[Qiniu] Warning: Failed to get certificates for domain: %v", err)
 		// Don't fail the whole operation, just skip
 		return ""
 	}
 
-	if !isOnQiniu {
+	if len(existingCerts) == 0 {
 		log.Printf("[Qiniu] Domain %s is not on Qiniu, skipping sync", domain)
 		return ""
 	}
 
 	log.Printf("[Qiniu] Domain %s is on Qiniu, uploading certificate", domain)
-
-	// Get all existing certificates for this domain
-	existingCerts, _ := h.qiniuClient.GetCertificatesByDomain(ctx, domain)
 
 	// Upload new certificate
 	qiniuCertID, err := h.qiniuClient.UploadCertificate(ctx, domain, domain, keyPEM, certPEM)

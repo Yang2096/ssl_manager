@@ -6,9 +6,10 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
+	"github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common"
+	ssl "github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ssl/v20191205"
 	"github.com/yang/ssl-manager/pkg/acme"
 	"github.com/yang/ssl-manager/pkg/cert"
 	"github.com/yang/ssl-manager/pkg/config"
@@ -228,25 +229,12 @@ func (h *CertificateHandler) IssueCertificateLocal(ctx context.Context, domain s
 	}, nil
 }
 
-// RenewCertificate renews a certificate using UpdateCertificate API
-func (h *CertificateHandler) RenewCertificate(ctx context.Context, domain string, force bool) (*response.CertificateResponse, error) {
-	log.Printf("Renewing certificate for %s (force=%v)", domain, force)
+// RenewCertificate renews a certificate using UploadCertificate + TransferCertificateInstances
+// Note: This always performs renewal. For conditional renewal based on expiry, use CheckAndRenew.
+func (h *CertificateHandler) RenewCertificate(ctx context.Context, domain string) (*response.CertificateResponse, error) {
+	log.Printf("Renewing certificate for %s", domain)
 
-	// Step 1: Check if renewal is needed
-	if !force {
-		certInfo, err := h.CheckCertificateExpiry(ctx, domain)
-		if err == nil && certInfo != nil && !certInfo.IsExpiringSoon && !certInfo.IsExpired {
-			log.Printf("Certificate for %s is still valid", domain)
-			return &response.CertificateResponse{
-				Success:       true,
-				Domain:        domain,
-				Message:       fmt.Sprintf("Certificate is still valid, expires in %d days", certInfo.RemainingDays),
-				RemainingDays: certInfo.RemainingDays,
-			}, nil
-		}
-	}
-
-	// Step 2: Get old certificate ID
+	// Step 1: Get old (latest available) certificate ID
 	oldCertID, err := h.sslClient.GetCertificateID(ctx, domain)
 	if err != nil {
 		return response.NewCertificateError(domain, fmt.Sprintf("Failed to get certificate ID: %v", err)), nil
@@ -260,7 +248,7 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, domain string
 
 	log.Printf("Found existing certificate ID: %s for domain %s", oldCertID, domain)
 
-	// Step 3: Request new certificate from ACME
+	// Step 2: Request new certificate from ACME
 	result, err := h.acmeClient.RequestCertificate(
 		ctx,
 		[]string{domain},
@@ -278,123 +266,130 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, domain string
 
 	log.Printf("New certificate obtained from ACME for %s", domain)
 
-	// Step 4: Try UpdateCertificate API (one-click update)
-	updateResult, updateErr := h.sslClient.UpdateCertificateWithPolling(
-		ctx,
-		oldCertID,
-		result.CertPEM,
-		result.KeyPEM,
-		domain,
-	)
-
-	// Step 5: Handle Update API errors or fallback
-	if updateErr != nil {
-		log.Printf("UpdateCertificate API failed: %v, falling back to upload", updateErr)
-
-		// Check if error is non-retryable (e.g., not supported)
-		if isNonRetryableError(updateErr) {
-			// Fallback to traditional upload + deploy
-			return h.fallbackRenewal(ctx, domain, result, oldCertID, updateErr)
-		}
-
-		// Retryable error - return error immediately
-		return response.NewCertificateError(domain, fmt.Sprintf("Certificate update failed: %v", updateErr)), nil
+	// Step 3: Upload new certificate to get newCertID
+	newCertID, err := h.sslClient.UploadCertificate(ctx, result.CertPEM, result.KeyPEM)
+	if err != nil {
+		log.Printf("Failed to upload new certificate: %v", err)
+		return response.NewCertificateError(domain, fmt.Sprintf("Failed to upload certificate: %v", err)), nil
 	}
 
-	// Step 6: Success - update local storage
+	log.Printf("New certificate uploaded with ID: %s", newCertID)
+
+	// Step 4: Check if has explicit UpdateConfig and transfer instances
+	resourceConfigs := h.cfg.GetUpdateConfigForDomain(domain)
+	if len(resourceConfigs) > 0 && oldCertID != "" {
+		log.Printf("Domain %s has explicit UpdateConfig, transferring instances", domain)
+
+		resourceTypes, resourceTypesRegions := convertResourceConfigs(resourceConfigs)
+		log.Printf("Resource types for %s: %v", domain, resourceTypes)
+
+		transferResult, transferErr := h.sslClient.TransferCertificateInstances(
+			ctx,
+			oldCertID,
+			newCertID,
+			resourceTypes,
+			resourceTypesRegions,
+		)
+
+		if transferErr != nil {
+			log.Printf("Warning: Failed to transfer certificate instances: %v", transferErr)
+			// Don't fail - the new certificate is already uploaded
+		} else {
+			log.Printf("Certificate instances transferred: DeployRecordId=%s", transferResult.DeployRecordID)
+		}
+	} else {
+		log.Printf("Domain %s has no explicit UpdateConfig, skipping resource transfer", domain)
+	}
+
+	// Step 5: Save local copy
 	if _, _, err := h.certStorage.SaveCertificate(ctx, domain, result.CertPEM, result.KeyPEM); err != nil {
 		log.Printf("Failed to save certificate locally: %v", err)
-		// Don't fail, certificate is already updated in cloud
+		// Don't fail, certificate is already uploaded
 	}
 
-	// Step 7: Log success
-	if updateResult.IsPolling {
-		log.Printf("Certificate renewed successfully with polling: DeployRecordId=%s", updateResult.DeployRecordID)
-	} else {
-		log.Printf("Certificate renewed successfully: DeployRecordId=%s", updateResult.DeployRecordID)
-	}
-
-	// Step 8: Sync to Qiniu if the domain is on Qiniu
+	// Step 6: Sync to Qiniu if the domain is on Qiniu
 	qiniuCertID := h.syncToQiniu(ctx, domain, result.CertPEM, result.KeyPEM)
+
+	// Step 7: Cleanup expired certificates
+	if cleanupErr := h.CleanupExpiredCertificates(ctx, domain); cleanupErr != nil {
+		log.Printf("Warning: Failed to cleanup expired certificates: %v", cleanupErr)
+		// Don't fail - renewal was successful
+	}
 
 	return &response.CertificateResponse{
 		Success:     true,
 		Domain:      domain,
 		Domains:     []string{domain},
-		CertID:      oldCertID, // Same ID preserved
+		CertID:      newCertID,
+		OldCertID:   oldCertID,
 		QiniuCertID: qiniuCertID,
 		CertPath:    result.CertPath,
 		KeyPath:     result.KeyPath,
 		CertPEM:     result.CertPEM,
 		KeyPEM:      result.KeyPEM,
-		Message:     "Certificate renewed successfully (ID preserved)",
+		Message:     "Certificate renewed successfully",
 		ExpiresAt:   result.ExpiresAt.Format(time.RFC3339),
 	}, nil
 }
 
-// isNonRetryableError checks if error is non-retryable
-func isNonRetryableError(err error) bool {
-	if err == nil {
-		return false
+// CleanupExpiredCertificates cleans up expired certificates for a domain
+// Only deletes expired certificates when there's a valid certificate available
+func (h *CertificateHandler) CleanupExpiredCertificates(ctx context.Context, domain string) error {
+	log.Printf("Cleaning up expired certificates for %s", domain)
+
+	// Get all certificates for this domain
+	certificates, err := h.sslClient.GetCertificatesByDomain(ctx, domain)
+	if err != nil {
+		return fmt.Errorf("failed to get certificates for cleanup: %w", err)
 	}
-	errStr := err.Error()
-	nonRetryableErrors := []string{
-		"UnsupportedOperation",
-		"CertificateHostDeployCanNotAllow",
-		"CertificateWhiteFuncError",
-		"FailedOperation.CertificateHostResourceInnerInterrupt",
+
+	// If only one or no certificate, nothing to clean up
+	if len(certificates) <= 1 {
+		log.Printf("Only %d certificate(s) for %s, skipping cleanup", len(certificates), domain)
+		return nil
 	}
-	for _, nonRetryable := range nonRetryableErrors {
-		if strings.Contains(errStr, nonRetryable) {
-			return true
+
+	log.Printf("Found %d certificates for %s", len(certificates), domain)
+
+	// Find certificates to delete (expired or expiring within 7 days, except the newest)
+	var toDelete []string
+	now := time.Now()
+	expiringThreshold := now.Add(7 * 24 * time.Hour)
+
+	for i, cert := range certificates {
+		// Skip the first (newest) certificate
+		if i == 0 {
+			continue
+		}
+
+		// Parse end time
+		endTime, err := time.Parse("2006-01-02 15:04:05", cert.CertEndTime)
+		if err != nil {
+			log.Printf("Warning: Failed to parse end time for certificate %s: %v", cert.CertificateID, err)
+			continue
+		}
+
+		// Delete if expired or expiring within 7 days
+		if endTime.Before(expiringThreshold) {
+			log.Printf("Marking certificate %s for deletion (expires: %s)", cert.CertificateID, cert.CertEndTime)
+			toDelete = append(toDelete, cert.CertificateID)
 		}
 	}
-	return false
-}
 
-// fallbackRenewal handles renewal when UpdateCertificate API is not available
-func (h *CertificateHandler) fallbackRenewal(
-	ctx context.Context,
-	domain string,
-	acmeResult *acme.CertificateResult,
-	oldCertID string,
-	updateErr error,
-) (*response.CertificateResponse, error) {
-	log.Printf("Using fallback renewal for %s", domain)
-
-	// Step 1: Upload as new certificate
-	newCertID, err := h.sslClient.UploadCertificate(ctx, acmeResult.CertPEM, acmeResult.KeyPEM)
-	if err != nil {
-		log.Printf("Fallback upload failed: %v", err)
-		return response.NewCertificateError(domain, fmt.Sprintf("Both update and fallback failed: %v", err)), nil
+	// Delete old certificates
+	for _, certID := range toDelete {
+		if err := h.sslClient.DeleteCertificate(ctx, certID); err != nil {
+			log.Printf("Warning: Failed to delete certificate %s: %v", certID, err)
+		} else {
+			log.Printf("Deleted expired certificate: %s", certID)
+		}
 	}
 
-	log.Printf("Fallback: Uploaded new certificate with ID: %s", newCertID)
-
-	// Step 2: Save local copy
-	if _, _, err := h.certStorage.SaveCertificate(ctx, domain, acmeResult.CertPEM, acmeResult.KeyPEM); err != nil {
-		log.Printf("Failed to save certificate locally: %v", err)
+	if len(toDelete) > 0 {
+		log.Printf("Cleaned up %d expired certificate(s) for %s", len(toDelete), domain)
 	}
 
-	// Step 3: Notify with warning (log only)
-	log.Printf("FALLBACK: Certificate renewed using fallback method. Old ID: %s, New ID: %s, Reason: %s",
-		oldCertID, newCertID, updateErr.Error())
-
-	// Step 4: Sync to Qiniu if the domain is on Qiniu
-	qiniuCertID := h.syncToQiniu(ctx, domain, acmeResult.CertPEM, acmeResult.KeyPEM)
-
-	return &response.CertificateResponse{
-		Success:     true,
-		Domain:      domain,
-		CertID:      newCertID, // New ID
-		QiniuCertID: qiniuCertID,
-		CertPath:    acmeResult.CertPath,
-		KeyPath:     acmeResult.KeyPath,
-		CertPEM:     acmeResult.CertPEM,
-		KeyPEM:      acmeResult.KeyPEM,
-		Message:     "Certificate renewed using fallback method (new ID created)",
-		ExpiresAt:   acmeResult.ExpiresAt.Format(time.RFC3339),
-	}, nil
+	return nil
 }
 
 // syncToQiniu syncs the certificate to Qiniu if the domain is used on Qiniu
@@ -454,53 +449,6 @@ func (h *CertificateHandler) syncToQiniu(ctx context.Context, domain, certPEM, k
 	return qiniuCertID
 }
 
-// CheckCertificateExpiry checks the expiry status of a certificate
-func (h *CertificateHandler) CheckCertificateExpiry(ctx context.Context, domain string) (*CertificateExpiryInfo, error) {
-	// Try to get from local storage first
-	certPEM, _, err := h.certStorage.LoadBoth(ctx, domain)
-	if err == nil && certPEM != "" {
-		validator := cert.NewValidator(h.cfg.CertExpiryWarningDays)
-		info, err := validator.ValidateCertificate(certPEM)
-		if err == nil {
-			return &CertificateExpiryInfo{
-				Domain:         domain,
-				RemainingDays:  info.RemainingDays,
-				IsExpiringSoon: info.IsExpiringSoon,
-				IsExpired:      info.IsExpired,
-				NotAfter:       info.NotAfter,
-			}, nil
-		}
-	}
-
-	// Check from SSL service
-	cert, err := h.sslClient.GetCertificateByDomain(ctx, domain)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get certificate: %w", err)
-	}
-	if cert == nil {
-		return nil, nil
-	}
-
-	endTime := cert.CertEndTime
-	remainingDays, err := calculateRemainingDays(endTime)
-	if err != nil {
-		return nil, err
-	}
-
-	return &CertificateExpiryInfo{
-		Domain:         domain,
-		RemainingDays:  remainingDays,
-		IsExpiringSoon: remainingDays <= h.cfg.CertExpiryWarningDays,
-		IsExpired:      remainingDays <= 0,
-		NotAfter:       parseEndTime(endTime),
-	}, nil
-}
-
-// GetCertificate retrieves certificate content
-func (h *CertificateHandler) GetCertificate(ctx context.Context, domain string) (string, string, error) {
-	return h.certStorage.LoadBoth(ctx, domain)
-}
-
 // ListCertificates lists all certificates from Tencent Cloud SSL service
 func (h *CertificateHandler) ListCertificates(ctx context.Context, searchDomain string) (*response.ListResponse, error) {
 	// Get certificates from SSL service
@@ -556,29 +504,6 @@ func (h *CertificateHandler) UploadCertificate(ctx context.Context, domain, cert
 	}, nil
 }
 
-// DeployCertificate deploys a certificate to cloud resources
-func (h *CertificateHandler) DeployCertificate(ctx context.Context, domain, resourceType string, resourceIDs []string) (*response.DeploymentResponse, error) {
-	log.Printf("Deploying certificate for %s to %s", domain, resourceType)
-
-	// Get certificate ID for domain
-	certID, err := h.sslClient.GetCertificateID(ctx, domain)
-	if err != nil || certID == "" {
-		return response.NewDeploymentError(domain, resourceType, "Certificate not found"), nil
-	}
-
-	// Deploy
-	deployment := sslClient.NewDeploymentOperations(h.sslClient)
-	result, err := deployment.Deploy(ctx, certID, resourceType, resourceIDs, domain)
-	if err != nil {
-		return response.NewDeploymentError(domain, resourceType, err.Error()), nil
-	}
-
-	if result.Success {
-		h.notifier.NotifyDeployment(ctx, domain, resourceType, result.DeploymentID, true)
-	}
-
-	return response.NewDeploymentSuccess(domain, resourceType, result.DeploymentID), nil
-}
 
 // CheckAndRenew checks and renews expiring certificates
 func (h *CertificateHandler) CheckAndRenew(ctx context.Context) (*response.CheckResponse, error) {
@@ -605,7 +530,7 @@ func (h *CertificateHandler) CheckAndRenew(ctx context.Context) (*response.Check
 			domain := certStatus.Domain
 			log.Printf("Renewing certificate for %s", domain)
 
-			result, err := h.RenewCertificate(ctx, domain, true)
+			result, err := h.RenewCertificate(ctx, domain)
 			if err != nil {
 				log.Printf("Failed to renew certificate for %s: %v", domain, err)
 				failedRenewals = append(failedRenewals, domain)
@@ -624,15 +549,6 @@ func (h *CertificateHandler) CheckAndRenew(ctx context.Context) (*response.Check
 		summary.Expired,
 		toResponseStatus(summary.Certificates),
 	), nil
-}
-
-// CertificateExpiryInfo holds certificate expiry information
-type CertificateExpiryInfo struct {
-	Domain         string    `json:"domain"`
-	RemainingDays  int       `json:"remaining_days"`
-	IsExpiringSoon bool      `json:"is_expiring_soon"`
-	IsExpired      bool      `json:"is_expired"`
-	NotAfter       time.Time `json:"not_after"`
 }
 
 // Notifier wraps the webhook notifier
@@ -698,22 +614,6 @@ func calculateRemainingDays(endTime string) (int, error) {
 	return 0, fmt.Errorf("unable to parse end time: %s", endTime)
 }
 
-func parseEndTime(endTime string) time.Time {
-	formats := []string{
-		"2006-01-02 15:04:05",
-		"2006-01-02T15:04:05Z",
-		time.RFC3339,
-	}
-
-	for _, format := range formats {
-		if t, err := time.Parse(format, endTime); err == nil {
-			return t
-		}
-	}
-
-	return time.Time{}
-}
-
 func toResponseStatus(statuses []cert.CertificateStatus) []response.CertificateStatus {
 	result := make([]response.CertificateStatus, 0, len(statuses))
 	for _, s := range statuses {
@@ -726,4 +626,29 @@ func toResponseStatus(statuses []cert.CertificateStatus) []response.CertificateS
 		})
 	}
 	return result
+}
+
+// convertResourceConfigs converts ResourceUpdateConfig slice to API format
+// Returns resourceTypes (string slice) and resourceTypesRegions (SDK format)
+func convertResourceConfigs(configs []config.ResourceUpdateConfig) ([]string, []*ssl.ResourceTypeRegions) {
+	resourceTypes := make([]string, 0, len(configs))
+	var resourceTypesRegions []*ssl.ResourceTypeRegions
+
+	for _, cfg := range configs {
+		resourceTypes = append(resourceTypes, cfg.Type)
+
+		// If regions are specified, create ResourceTypeRegions entry
+		if len(cfg.Regions) > 0 {
+			regions := make([]*string, 0, len(cfg.Regions))
+			for _, region := range cfg.Regions {
+				regions = append(regions, common.StringPtr(region))
+			}
+			resourceTypesRegions = append(resourceTypesRegions, &ssl.ResourceTypeRegions{
+				ResourceType: common.StringPtr(cfg.Type),
+				Regions:      regions,
+			})
+		}
+	}
+
+	return resourceTypes, resourceTypesRegions
 }

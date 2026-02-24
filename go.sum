@@ -56,8 +56,6 @@ github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.29 h1:fASrh
 github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/common v1.3.29/go.mod h1:r5r4xbfxSaeR04b166HGsBa/R4U3SueirEUpXGuw+Q0=
 github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dnspod v1.3.24 h1:pL+2Fy2usARzY+OpY38UAsGzGCO0hqsSIk8d5rAzkRE=
 github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/dnspod v1.3.24/go.mod h1:0+GSU/4UcPXMyTtxxypbd9jWRTDzWlIrRkNmuxwM5Zo=
-github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/scf v1.3.29 h1:MxY5dIlW9e48lqyMc9xtPCmO0RlJJ+RgZMqs6yYte9w=
-github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/scf v1.3.29/go.mod h1:ERH6Ek8rbThvxvqoC91U6ae+qJyUGrXPjv8sw881hho=
 github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ssl v1.3.24 h1:TZIjLvKhGXvWIe1Ce2ERGOhyNllCrU5YGN21SlH7hcw=
 github.com/tencentcloud/tencentcloud-sdk-go/tencentcloud/ssl v1.3.24/go.mod h1:4D0tAiirM7JDl+YStJlU0vVcEcJ7G8O5TMEX46p0zNs=
 github.com/tencentyun/scf-go-lib v0.0.0-20230904103145-13c9a7eeca80 h1:OjUY8rjewsD2dprstvMdFmUVXZaC1tkiRhXdisTFNrg=

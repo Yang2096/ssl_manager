@@ -116,7 +116,6 @@ ssl-manager/
 | `GetID(ctx, domain)` | 根据域名获取证书 ID |
 | `Delete(ctx, certID)` | 删除证书 |
 | `CheckStatus(ctx, certID)` | 检查证书状态 |
-| `Update(ctx, oldCertID, certPEM, keyPEM, alias)` | 更新证书 |
 | `List(ctx, limit, offset, searchKey)` | 列出证书 |
 
 **证书验证函数：**
@@ -194,7 +193,7 @@ ssl-manager/
 |---|---|
 | `IssueCertificate(ctx, domain, extraDomains)` | 申请证书并上传到腾讯云（可选同步到七牛） |
 | `IssueCertificateLocal(ctx, domain, extraDomains)` | 本地申请证书（不上传），返回证书路径和 PEM 内容 |
-| `RenewCertificate(ctx, domain, force)` | 续期证书（可选同步到七牛） |
+| `RenewCertificate(ctx, domain)` | 续期证书（可选同步到七牛） |
 | `ListCertificates(ctx, searchDomain)` | 列出证书 |
 | `UploadCertificate(ctx, domain, certDir)` | 上传已有证书 |
 | `DeployCertificate(ctx, domain, resourceType, resourceIDs)` | 部署证书 |
@@ -230,7 +229,7 @@ ssl-manager/
 | Action | 功能 | 参数 |
 |---|---|
 | `issue` | 申请新证书并上传到腾讯云 | `domain`, `staging` |
-| `renew` | 续期证书 | `domain`, `force` |
+| `renew` | 续期证书 | `domain` |
 | `deploy` | 部署证书到云资源 | `domain`, `resourceType`, `resourceIds` |
 | `list` | 列出证书 | `domain`（可选） |
 | `check` | 检查并自动续期即将过期证书 | 无 |
@@ -262,8 +261,7 @@ make scf-package       # 打包 SCF 部署包
 ./ssl-manager issue cdn.example.com           # 申请证书并上传到腾讯云
 ./ssl-manager issue-local cdn.example.com      # 本地申请证书（不上传）
 ./ssl-manager issue-local cdn.example.com --email admin@example.com  # 指定邮箱
-./ssl-manager renew cdn.example.com           # 续期证书
-./ssl-manager renew cdn.example.com --force   # 强制续期
+./ssl-manager renew cdn.example.com           # 续期证书(无视已有证书的可用时长)
 ./ssl-manager list                            # 列出证书
 ./ssl-manager list cdn.example.com            # 查询指定域名
 ./ssl-manager check                           # 检查并续期
@@ -289,6 +287,62 @@ make scf-package       # 打包 SCF 部署包
 | `NOTIFY_WEBHOOK` | Webhook URL | - |
 | `QINIU_ACCESS_KEY` | 七牛云 AccessKey（可选） | - |
 | `QINIU_SECRET_KEY` | 七牛云 SecretKey（可选） | - |
+| `SSL_UPDATE_CONFIG_DEFAULT` | 全局默认证书更新资源配置（JSON 数组） | 所有支持的资源类型 |
+| `SSL_UPDATE_CONFIG_{DOMAIN}` | 域名特定的证书更新资源配置（JSON 数组） | - |
+
+### 证书更新资源配置
+
+`SSL_UPDATE_CONFIG_*` 环境变量用于配置证书续期时需要更新的云资源类型和地域。
+
+#### 命名规则
+
+- 域名中的 `.` 替换为 `_`，转换为全大写
+- 例如：`cdn.example.com` → `SSL_UPDATE_CONFIG_CDN_EXAMPLE_COM`
+
+#### JSON 格式
+
+```json
+[
+  {"type": "cdn"},
+  {"type": "clb", "regions": ["ap-guangzhou", "ap-shanghai"]},
+  {"type": "waf", "regions": ["ap-guangzhou"]}
+]
+```
+
+#### 配置优先级
+
+1. 域名特定配置 `SSL_UPDATE_CONFIG_{DOMAIN}`（如 `SSL_UPDATE_CONFIG_CDN_EXAMPLE_COM`）
+2. 全局默认配置 `SSL_UPDATE_CONFIG_DEFAULT`
+3. 内置默认值（所有支持的资源类型）
+
+#### 支持的资源类型
+
+| 类型 | 需要地域 | 说明 |
+|------|---------|------|
+| `cdn` | 否 | 内容分发网络 |
+| `clb` | 是 | 负载均衡 |
+| `waf` | 是 | Web 应用防火墙 |
+| `live` | 否 | 云直播 |
+| `ddos` | 否 | DDoS 防护 |
+| `teo` | 否 | 边缘安全加速 |
+| `apigateway` | 是 | API 网关 |
+| `vod` | 否 | 云点播 |
+| `tke` | 是 | 容器服务 |
+| `tcb` | 是 | 云开发 |
+| `tse` | 是 | 微服务引擎 |
+| `cos` | 是 | 对象存储 |
+
+#### 配置示例
+
+```bash
+# 全局默认配置（所有域名通用）
+SSL_UPDATE_CONFIG_DEFAULT=[{"type":"cdn"},{"type":"clb","regions":["ap-guangzhou"]}]
+
+# 域名特定配置（支持多级域名）
+SSL_UPDATE_CONFIG_WWW_EXAMPLE_COM=[{"type":"cdn"}]
+
+SSL_UPDATE_CONFIG_API_SUB_EXAMPLE_COM=[{"type":"clb","regions":["ap-guangzhou","ap-shanghai"]},{"type":"cdn"}]
+```
 
 ### SCF 环境约束
 

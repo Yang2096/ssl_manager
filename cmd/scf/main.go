@@ -83,7 +83,6 @@ func Handler(ctx context.Context, event interface{}) (interface{}, error) {
 // Message format examples:
 //   - "check" -> action=check, params={}
 //   - "renew:example.com" -> action=renew, params={domain: example.com}
-//   - "renew:example.com::true" -> action=renew, params={domain: example.com, force: true}
 //   - "issue:example.com:true" -> action=issue, params={domain: example.com, staging: true}
 func parseActionMessage(message string) (string, map[string]interface{}) {
 	if message == "" {
@@ -99,9 +98,6 @@ func parseActionMessage(message string) (string, map[string]interface{}) {
 	}
 	if len(parts) > 2 && parts[2] != "" {
 		params["staging"] = parts[2] == "true"
-	}
-	if len(parts) > 3 && parts[3] != "" {
-		params["force"] = parts[3] == "true"
 	}
 
 	return action, params
@@ -119,8 +115,7 @@ func processAction(ctx context.Context, h *handler.CertificateHandler, action st
 		if domain == "" {
 			return response.NewError("InvalidInput", "domain is required for renew action", "")
 		}
-		force := getBoolFromMap(params, "force", false)
-		result, _ := h.RenewCertificate(ctx, domain, force)
+		result, _ := h.RenewCertificate(ctx, domain)
 		return result
 
 	case "issue":

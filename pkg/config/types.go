@@ -1,6 +1,15 @@
 package config
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
+
+// ResourceUpdateConfig defines resource update configuration for a domain
+type ResourceUpdateConfig struct {
+	Type    string   `json:"type"`              // Resource type: cdn, clb, waf, etc.
+	Regions []string `json:"regions,omitempty"` // Region list (optional, required for some types)
+}
 
 // Config holds the application configuration
 type Config struct {
@@ -96,4 +105,17 @@ func (c *Config) GetServerURL() string {
 		return "https://acme-staging-v02.api.letsencrypt.org/directory"
 	}
 	return c.ACMEServer
+}
+
+// ParseResourceUpdateConfigs parses JSON string into ResourceUpdateConfig slice
+func ParseResourceUpdateConfigs(jsonStr string) ([]ResourceUpdateConfig, error) {
+	if jsonStr == "" {
+		return nil, nil
+	}
+
+	var configs []ResourceUpdateConfig
+	if err := json.Unmarshal([]byte(jsonStr), &configs); err != nil {
+		return nil, err
+	}
+	return configs, nil
 }

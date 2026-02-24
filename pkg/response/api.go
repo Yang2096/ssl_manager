@@ -39,6 +39,7 @@ type CertificateResponse struct {
 	Domain        string   `json:"domain,omitempty"`
 	Domains       []string `json:"domains,omitempty"`
 	CertID        string   `json:"cert_id,omitempty"`
+	OldCertID     string   `json:"old_cert_id,omitempty"` // Old certificate ID (for renewal)
 	QiniuCertID   string   `json:"qiniu_cert_id,omitempty"`
 	CertPath      string   `json:"cert_path,omitempty"`
 	KeyPath       string   `json:"key_path,omitempty"`

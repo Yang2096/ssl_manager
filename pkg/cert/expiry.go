@@ -209,8 +209,9 @@ func (e *ExpiryChecker) GetRenewalCandidates(ctx context.Context, fetcher SSLCer
 }
 
 // CheckAllCertificates returns a summary of all certificates
+// Groups certificates by domain and only reports the latest certificate per domain
 func (e *ExpiryChecker) CheckAllCertificates(ctx context.Context, fetcher SSLCertificateFetcher) (*CertificateSummary, error) {
-	certs, err := fetcher.GetCertificateList(ctx, 100, 0, "")
+	certs, err := fetcher.GetCertificateList(ctx, 200, 0, "")
 	if err != nil {
 		return nil, fmt.Errorf("failed to get certificate list: %w", err)
 	}
@@ -218,6 +219,10 @@ func (e *ExpiryChecker) CheckAllCertificates(ctx context.Context, fetcher SSLCer
 	summary := &CertificateSummary{
 		Certificates: make([]CertificateStatus, 0),
 	}
+
+	// Group certificates by domain
+	domainCerts := make(map[string][]CertificateStatus)
+	var multiCertDomains []string
 
 	for i := range certs {
 		cert := &certs[i]
@@ -240,18 +245,41 @@ func (e *ExpiryChecker) CheckAllCertificates(ctx context.Context, fetcher SSLCer
 			Status:        cert.Status,
 			Urgency:       e.getUrgency(remainingDays),
 		}
-		summary.Certificates = append(summary.Certificates, status)
 
-		if remainingDays <= 0 {
+		domain := cert.Domain
+		domainCerts[domain] = append(domainCerts[domain], status)
+	}
+
+	// Process each domain - only report the latest certificate!!!!
+	for domain, certList := range domainCerts {
+		if len(certList) > 1 {
+			multiCertDomains = append(multiCertDomains, domain)
+			// Sort by remaining days (ascending - least days first, so newest is last)
+			sort.Slice(certList, func(i, j int) bool {
+				return certList[i].RemainingDays < certList[j].RemainingDays
+			})
+		}
+
+		// Take the certificate with the most remaining days (newest)
+		latestCert := certList[len(certList)-1]
+		summary.Certificates = append(summary.Certificates, latestCert)
+
+		// Update summary counts
+		if latestCert.RemainingDays <= 0 {
 			summary.Expired++
-		} else if remainingDays <= 7 {
+		} else if latestCert.RemainingDays <= 7 {
 			summary.ExpiringVerySoon++
 			summary.ExpiringSoon++
-		} else if remainingDays <= 30 {
+		} else if latestCert.RemainingDays <= 30 {
 			summary.ExpiringSoon++
 		} else {
 			summary.Valid++
 		}
+	}
+
+	// Log domains with multiple certificates
+	if len(multiCertDomains) > 0 {
+		log.Printf("Domains with multiple certificates: %v", multiCertDomains)
 	}
 
 	summary.Total = len(summary.Certificates)

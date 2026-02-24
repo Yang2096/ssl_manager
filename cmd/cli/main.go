@@ -156,14 +156,8 @@ func (c *CLI) issueLocalCommand(args []string) {
 }
 
 func (c *CLI) renewCommand(args []string) {
-	force := false
-	if len(args) > 0 && args[0] == "--force" {
-		force = true
-		args = args[1:]
-	}
-
 	if len(args) < 1 {
-		fmt.Println("Usage: ssl-manager renew <domain> [--force]")
+		fmt.Println("Usage: ssl-manager renew <domain>")
 		os.Exit(1)
 	}
 
@@ -172,7 +166,7 @@ func (c *CLI) renewCommand(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 
-	result, err := c.handler.RenewCertificate(ctx, domain, force)
+	result, err := c.handler.RenewCertificate(ctx, domain)
 	if err != nil {
 		log.Fatalf("Failed to renew certificate: %v", err)
 	}
@@ -183,9 +177,6 @@ func (c *CLI) renewCommand(args []string) {
 
 	fmt.Printf("Certificate renewed successfully!\n")
 	fmt.Printf("Domain: %s\n", result.Domain)
-	if result.RemainingDays > 0 {
-		fmt.Printf("Remaining days: %d\n", result.RemainingDays)
-	}
 }
 
 func (c *CLI) listCommand(args []string) {

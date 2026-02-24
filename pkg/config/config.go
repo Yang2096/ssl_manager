@@ -151,3 +151,49 @@ func MustLoad() *Config {
 	}
 	return cfg
 }
+
+// domainToEnvKey converts a domain to environment variable key format
+// example.com -> EXAMPLE_COM
+// api.sub.example.com -> API_SUB_EXAMPLE_COM
+// *.example.com -> _EXAMPLE_COM (wildcard)
+func domainToEnvKey(domain string) string {
+	// Handle wildcard domains
+	domain = strings.TrimPrefix(domain, "*.")
+
+	// Replace dots with underscores and convert to uppercase
+	return strings.ToUpper(strings.ReplaceAll(domain, ".", "_"))
+}
+
+// GetUpdateConfigForDomain gets resource update configuration for a specific domain
+// Only returns configuration if SSL_UPDATE_CONFIG_{DOMAIN} is explicitly set
+// Returns nil if no domain-specific configuration is found
+func (c *Config) GetUpdateConfigForDomain(domain string) []ResourceUpdateConfig {
+	envKey := "SSL_UPDATE_CONFIG_" + domainToEnvKey(domain)
+
+	// Only check domain-specific configuration, no fallback
+	if configs := c.loadUpdateConfigFromEnv(envKey); len(configs) > 0 {
+		log.Printf("Using domain-specific update config for %s from %s", domain, envKey)
+		return configs
+	}
+
+	// No explicit configuration found
+	log.Printf("No explicit update config found for %s", domain)
+	return nil
+}
+
+// loadUpdateConfigFromEnv loads resource update config from an environment variable
+func (c *Config) loadUpdateConfigFromEnv(envKey string) []ResourceUpdateConfig {
+	jsonStr := os.Getenv(envKey)
+	if jsonStr == "" {
+		return nil
+	}
+
+	configs, err := ParseResourceUpdateConfigs(jsonStr)
+	if err != nil {
+		log.Printf("Warning: Failed to parse %s: %v", envKey, err)
+		return nil
+	}
+
+	return configs
+}
+

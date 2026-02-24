@@ -15,7 +15,7 @@ if [ -f "$ENV_FILE" ]; then
         value=$(echo "$value" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
         export "$key=$value"
-        echo -e "\033[32mLoaded: [$key=$value]\033[0m"
+        echo -e "\033[32mLoaded: [$key]\033[0m"
     done < "$ENV_FILE"
 fi
 

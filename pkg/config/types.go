@@ -25,6 +25,10 @@ type Config struct {
 	// Notification settings
 	NotifyEnabled bool
 	NotifyWebhook string
+
+	// Qiniu settings (optional - for certificate sync to Qiniu CDN)
+	QiniuAccessKey string
+	QiniuSecretKey string
 }
 
 // AcmeConfig holds ACME-specific path configurations

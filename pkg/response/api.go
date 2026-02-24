@@ -35,19 +35,20 @@ type ErrorInfo struct {
 
 // CertificateResponse represents a certificate operation response
 type CertificateResponse struct {
-	Success     bool   `json:"success"`
-	Domain      string `json:"domain,omitempty"`
-	Domains     []string `json:"domains,omitempty"`
-	CertID      string `json:"cert_id,omitempty"`
-	CertPath    string `json:"cert_path,omitempty"`
-	KeyPath     string `json:"key_path,omitempty"`
-	CSRPath     string `json:"csr_path,omitempty"`
-	CertPEM     string `json:"cert_pem,omitempty"`
-	KeyPEM      string `json:"key_pem,omitempty"`
-	Message     string `json:"message"`
-	RemainingDays int    `json:"remaining_days,omitempty"`
-	ExpiresAt   string `json:"expires_at,omitempty"`
-	Error       string `json:"error,omitempty"`
+	Success       bool     `json:"success"`
+	Domain        string   `json:"domain,omitempty"`
+	Domains       []string `json:"domains,omitempty"`
+	CertID        string   `json:"cert_id,omitempty"`
+	QiniuCertID   string   `json:"qiniu_cert_id,omitempty"`
+	CertPath      string   `json:"cert_path,omitempty"`
+	KeyPath       string   `json:"key_path,omitempty"`
+	CSRPath       string   `json:"csr_path,omitempty"`
+	CertPEM       string   `json:"cert_pem,omitempty"`
+	KeyPEM        string   `json:"key_pem,omitempty"`
+	Message       string   `json:"message"`
+	RemainingDays int      `json:"remaining_days,omitempty"`
+	ExpiresAt     string   `json:"expires_at,omitempty"`
+	Error         string   `json:"error,omitempty"`
 }
 
 // DeploymentResponse represents a deployment operation response

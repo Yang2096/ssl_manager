@@ -10,6 +10,7 @@ import (
 
 	"github.com/yang/ssl-manager/pkg/config"
 	"github.com/yang/ssl-manager/pkg/handler"
+	"github.com/yang/ssl-manager/pkg/qiniu"
 	"github.com/yang/ssl-manager/pkg/ssl"
 )
 
@@ -72,6 +73,10 @@ func main() {
 		cli.renewCommand(args)
 	case "list":
 		cli.listCommand(args)
+	case "list-qiniu":
+		cli.listQiniuCommand(args)
+	case "delete-qiniu":
+		cli.deleteQiniuCommand(args)
 	case "check":
 		cli.checkCommand(args)
 	case "upload":
@@ -244,6 +249,184 @@ func (c *CLI) listCommand(args []string) {
 	}
 }
 
+func (c *CLI) listQiniuCommand(args []string) {
+	// Check if Qiniu client is configured
+	accessKey := os.Getenv("QINIU_ACCESS_KEY")
+	secretKey := os.Getenv("QINIU_SECRET_KEY")
+
+	if accessKey == "" || secretKey == "" {
+		fmt.Println("Qiniu client is not configured.")
+		fmt.Println("Please set the following environment variables:")
+		fmt.Println("  QINIU_ACCESS_KEY - Qiniu AccessKey")
+		fmt.Println("  QINIU_SECRET_KEY - Qiniu SecretKey")
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Minute)
+	defer cancel()
+
+	// Create Qiniu client
+	qiniuClient, err := qiniu.NewClient(accessKey, secretKey)
+	if err != nil {
+		log.Fatalf("Failed to create Qiniu client: %v", err)
+	}
+
+	certs, err := qiniuClient.ListCertificates(ctx)
+	if err != nil {
+		log.Fatalf("Failed to list Qiniu certificates: %v", err)
+	}
+
+	if len(certs) == 0 {
+		fmt.Println("No certificates found on Qiniu.")
+		return
+	}
+
+	// Statistics
+	var validCount, expiringCount, expiredCount int
+	warningDays := c.cfg.CertExpiryWarningDays
+	if warningDays == 0 {
+		warningDays = 30
+	}
+
+	for _, cert := range certs {
+		if cert.NotAfter > 0 {
+			expiryTime := time.Unix(cert.NotAfter, 0)
+			remainingDays := int(time.Until(expiryTime).Hours() / 24)
+			if remainingDays < 0 {
+				expiredCount++
+			} else if remainingDays <= warningDays {
+				expiringCount++
+			} else {
+				validCount++
+			}
+		} else {
+			validCount++
+		}
+	}
+
+	fmt.Printf("=== Qiniu Cloud SSL Certificates ===\n\n")
+	fmt.Printf("Total: %d | Valid: %d | Expiring soon: %d | Expired: %d\n\n", len(certs), validCount, expiringCount, expiredCount)
+
+	for i, cert := range certs {
+		fmt.Printf("[%d] %s\n", i+1, cert.CommonName)
+		fmt.Printf("    Cert ID: %s\n", cert.CertID)
+		if cert.Name != "" && cert.Name != cert.CommonName {
+			fmt.Printf("    Name: %s\n", cert.Name)
+		}
+
+		// Certificate type info
+		var typeInfo []string
+		if cert.CertType != "" {
+			typeInfo = append(typeInfo, cert.CertType)
+		}
+		if cert.ProductType != "" {
+			switch cert.ProductType {
+			case "single":
+				typeInfo = append(typeInfo, "Single")
+			case "multi":
+				typeInfo = append(typeInfo, "Multi-domain")
+			case "wildcard":
+				typeInfo = append(typeInfo, "Wildcard")
+			}
+		}
+		if cert.Encrypt != "" {
+			typeInfo = append(typeInfo, cert.Encrypt)
+		}
+		if len(typeInfo) > 0 {
+			fmt.Printf("    Type: %s\n", strings.Join(typeInfo, " / "))
+		}
+
+		// Show all DNS names (for multi-domain certs)
+		if len(cert.DNSNames) > 1 {
+			fmt.Printf("    DNS Names:\n")
+			for _, name := range cert.DNSNames {
+				fmt.Printf("      - %s\n", name)
+			}
+		}
+
+		// Format timestamps with expiry status
+		if cert.NotBefore > 0 && cert.NotAfter > 0 {
+			notBefore := time.Unix(cert.NotBefore, 0).Format("2006-01-02")
+			notAfter := time.Unix(cert.NotAfter, 0).Format("2006-01-02")
+			expiryTime := time.Unix(cert.NotAfter, 0)
+			remainingDays := int(time.Until(expiryTime).Hours() / 24)
+
+			var status string
+			if remainingDays < 0 {
+				status = "EXPIRED"
+			} else if remainingDays <= warningDays {
+				status = "EXPIRING SOON"
+			} else {
+				status = "OK"
+			}
+
+			fmt.Printf("    Valid: %s ~ %s\n", notBefore, notAfter)
+			if remainingDays < 0 {
+				fmt.Printf("    Status: %s (expired %d days ago)\n", status, -remainingDays)
+			} else if remainingDays <= warningDays {
+				fmt.Printf("    Status: %s (%d days remaining)\n", status, remainingDays)
+			} else {
+				fmt.Printf("    Status: %s (%d days remaining)\n", status, remainingDays)
+			}
+		}
+
+		// Additional flags
+		var flags []string
+		if cert.Enable {
+			flags = append(flags, "Enabled")
+		} else {
+			flags = append(flags, "Disabled")
+		}
+		if cert.AutoRenew {
+			flags = append(flags, "AutoRenew")
+		}
+		if cert.Renewable {
+			flags = append(flags, "Renewable")
+		}
+		fmt.Printf("    Flags: %s\n", strings.Join(flags, ", "))
+
+		if cert.CreateTime > 0 {
+			createTime := time.Unix(cert.CreateTime, 0).Format("2006-01-02 15:04")
+			fmt.Printf("    Created: %s\n", createTime)
+		}
+		fmt.Println()
+	}
+}
+
+func (c *CLI) deleteQiniuCommand(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: ssl-manager delete-qiniu <cert-id>")
+		os.Exit(1)
+	}
+
+	certID := args[0]
+
+	// Check Qiniu credentials
+	accessKey := os.Getenv("QINIU_ACCESS_KEY")
+	secretKey := os.Getenv("QINIU_SECRET_KEY")
+
+	if accessKey == "" || secretKey == "" {
+		fmt.Println("Qiniu client is not configured.")
+		fmt.Println("Please set QINIU_ACCESS_KEY and QINIU_SECRET_KEY")
+		os.Exit(1)
+	}
+
+	// Create Qiniu client and delete
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	qiniuClient, err := qiniu.NewClient(accessKey, secretKey)
+	if err != nil {
+		log.Fatalf("Failed to create Qiniu client: %v", err)
+	}
+
+	if err := qiniuClient.Delete(ctx, certID); err != nil {
+		log.Fatalf("Failed to delete certificate: %v", err)
+	}
+
+	fmt.Printf("Certificate %s deleted successfully from Qiniu!\n", certID)
+}
+
 func (c *CLI) checkCommand(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -309,7 +492,9 @@ func printHelp() {
 	fmt.Println("  issue       Issue a new certificate and upload to Tencent Cloud SSL")
 	fmt.Println("  issue-local Issue a certificate locally (without uploading)")
 	fmt.Println("  renew       Renew a certificate")
-	fmt.Println("  list        List certificates")
+	fmt.Println("  list        List certificates on Tencent Cloud")
+	fmt.Println("  list-qiniu    List certificates on Qiniu Cloud")
+	fmt.Println("  delete-qiniu  Delete a certificate from Qiniu Cloud by cert-id")
 	fmt.Println("  check       Check and auto-renew expiring certificates")
 	fmt.Println("  upload      Upload an existing certificate to Tencent Cloud")
 	fmt.Println("  help        Show this help message")
@@ -325,4 +510,8 @@ func printHelp() {
 	fmt.Println("  CERT_EXPIRY_WARNING_DAYS   Certificate expiry warning days (default: 30)")
 	fmt.Println("  NOTIFY_ENABLED             Enable webhook notifications (default: false)")
 	fmt.Println("  NOTIFY_WEBHOOK             Webhook URL for notifications")
+	fmt.Println()
+	fmt.Println("Qiniu Cloud (optional):")
+	fmt.Println("  QINIU_ACCESS_KEY          Qiniu Cloud AccessKey")
+	fmt.Println("  QINIU_SECRET_KEY          Qiniu Cloud SecretKey")
 }

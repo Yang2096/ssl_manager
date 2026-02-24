@@ -75,6 +75,13 @@ func Load() (*Config, error) {
 	cfg.NotifyEnabled = getBoolEnv("NOTIFY_ENABLED", cfg.NotifyEnabled)
 	cfg.NotifyWebhook = getEnv("NOTIFY_WEBHOOK", cfg.NotifyWebhook)
 
+	// Qiniu settings (optional)
+	cfg.QiniuAccessKey = getEnv("QINIU_ACCESS_KEY", "")
+	cfg.QiniuSecretKey = getEnv("QINIU_SECRET_KEY", "")
+	if cfg.QiniuAccessKey != "" && cfg.QiniuSecretKey != "" {
+		log.Printf("Qiniu integration enabled")
+	}
+
 	return cfg, nil
 }
 

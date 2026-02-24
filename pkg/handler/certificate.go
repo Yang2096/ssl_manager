@@ -14,6 +14,7 @@ import (
 	"github.com/yang/ssl-manager/pkg/config"
 	"github.com/yang/ssl-manager/pkg/dns"
 	notify "github.com/yang/ssl-manager/pkg/notify"
+	"github.com/yang/ssl-manager/pkg/qiniu"
 	"github.com/yang/ssl-manager/pkg/response"
 	sslClient "github.com/yang/ssl-manager/pkg/ssl"
 )
@@ -24,6 +25,7 @@ type CertificateHandler struct {
 	acmeClient  *acme.Client
 	dnsHandler  *dns.ChallengeHandler
 	sslClient   *sslClient.Client
+	qiniuClient *qiniu.Client
 	certStorage *cert.CertificateStorage
 	notifier    *Notifier
 }
@@ -90,11 +92,24 @@ func NewCertificateHandler(cfg *config.Config) (*CertificateHandler, error) {
 		cfg.NotifyEnabled,
 	)
 
+	// Create Qiniu client (optional)
+	var qiniuClient *qiniu.Client
+	if cfg.QiniuAccessKey != "" && cfg.QiniuSecretKey != "" {
+		qiniuClient, err = qiniu.NewClient(cfg.QiniuAccessKey, cfg.QiniuSecretKey)
+		if err != nil {
+			log.Printf("Warning: Failed to create Qiniu client: %v", err)
+			// Don't fail, Qiniu is optional
+		} else {
+			log.Printf("Qiniu client initialized successfully")
+		}
+	}
+
 	return &CertificateHandler{
 		cfg:         cfg,
 		acmeClient:  acmeClient,
 		dnsHandler:  dnsHandler,
 		sslClient:   sslClient,
+		qiniuClient: qiniuClient,
 		certStorage: certStorage,
 		notifier:    notifier,
 	}, nil
@@ -149,17 +164,21 @@ func (h *CertificateHandler) IssueCertificate(ctx context.Context, domain string
 		h.notifier.NotifySuccess(ctx, domain, "issued", certID)
 	}
 
+	// Sync to Qiniu if the domain is on Qiniu
+	qiniuCertID := h.syncToQiniu(ctx, domain, result.CertPEM, result.KeyPEM)
+
 	return &response.CertificateResponse{
-		Success:   true,
-		Domain:    domain,
-		Domains:   domains,
-		CertID:    certID,
-		CertPath:  result.CertPath,
-		KeyPath:   result.KeyPath,
-		CertPEM:   result.CertPEM,
-		KeyPEM:    result.KeyPEM,
-		Message:   "Certificate issued successfully",
-		ExpiresAt: result.ExpiresAt.Format(time.RFC3339),
+		Success:     true,
+		Domain:      domain,
+		Domains:     domains,
+		CertID:      certID,
+		QiniuCertID: qiniuCertID,
+		CertPath:    result.CertPath,
+		KeyPath:     result.KeyPath,
+		CertPEM:     result.CertPEM,
+		KeyPEM:      result.KeyPEM,
+		Message:     "Certificate issued successfully",
+		ExpiresAt:   result.ExpiresAt.Format(time.RFC3339),
 	}, nil
 }
 
@@ -295,17 +314,21 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, domain string
 		log.Printf("Certificate renewed successfully: DeployRecordId=%s", updateResult.DeployRecordID)
 	}
 
+	// Step 8: Sync to Qiniu if the domain is on Qiniu
+	qiniuCertID := h.syncToQiniu(ctx, domain, result.CertPEM, result.KeyPEM)
+
 	return &response.CertificateResponse{
-		Success:   true,
-		Domain:    domain,
-		Domains:   []string{domain},
-		CertID:    oldCertID, // Same ID preserved
-		CertPath:  result.CertPath,
-		KeyPath:   result.KeyPath,
-		CertPEM:   result.CertPEM,
-		KeyPEM:    result.KeyPEM,
-		Message:   "Certificate renewed successfully (ID preserved)",
-		ExpiresAt: result.ExpiresAt.Format(time.RFC3339),
+		Success:     true,
+		Domain:      domain,
+		Domains:     []string{domain},
+		CertID:      oldCertID, // Same ID preserved
+		QiniuCertID: qiniuCertID,
+		CertPath:    result.CertPath,
+		KeyPath:     result.KeyPath,
+		CertPEM:     result.CertPEM,
+		KeyPEM:      result.KeyPEM,
+		Message:     "Certificate renewed successfully (ID preserved)",
+		ExpiresAt:   result.ExpiresAt.Format(time.RFC3339),
 	}, nil
 }
 
@@ -357,17 +380,78 @@ func (h *CertificateHandler) fallbackRenewal(
 	log.Printf("FALLBACK: Certificate renewed using fallback method. Old ID: %s, New ID: %s, Reason: %s",
 		oldCertID, newCertID, updateErr.Error())
 
+	// Step 4: Sync to Qiniu if the domain is on Qiniu
+	qiniuCertID := h.syncToQiniu(ctx, domain, acmeResult.CertPEM, acmeResult.KeyPEM)
+
 	return &response.CertificateResponse{
-		Success:   true,
-		Domain:    domain,
-		CertID:    newCertID, // New ID
-		CertPath:  acmeResult.CertPath,
-		KeyPath:   acmeResult.KeyPath,
-		CertPEM:   acmeResult.CertPEM,
-		KeyPEM:    acmeResult.KeyPEM,
-		Message:   "Certificate renewed using fallback method (new ID created)",
-		ExpiresAt: acmeResult.ExpiresAt.Format(time.RFC3339),
+		Success:     true,
+		Domain:      domain,
+		CertID:      newCertID, // New ID
+		QiniuCertID: qiniuCertID,
+		CertPath:    acmeResult.CertPath,
+		KeyPath:     acmeResult.KeyPath,
+		CertPEM:     acmeResult.CertPEM,
+		KeyPEM:      acmeResult.KeyPEM,
+		Message:     "Certificate renewed using fallback method (new ID created)",
+		ExpiresAt:   acmeResult.ExpiresAt.Format(time.RFC3339),
 	}, nil
+}
+
+// syncToQiniu syncs the certificate to Qiniu if the domain is used on Qiniu
+// Returns the Qiniu certificate ID if synced, empty string otherwise
+func (h *CertificateHandler) syncToQiniu(ctx context.Context, domain, certPEM, keyPEM string) string {
+	if h.qiniuClient == nil || !h.qiniuClient.IsEnabled() {
+		log.Printf("[Qiniu] Client not configured, skipping sync")
+		return ""
+	}
+
+	// Check if domain is on Qiniu
+	isOnQiniu, err := h.qiniuClient.IsDomainOnQiniu(ctx, domain)
+	if err != nil {
+		log.Printf("[Qiniu] Warning: Failed to check if domain is on Qiniu: %v", err)
+		// Don't fail the whole operation, just skip
+		return ""
+	}
+
+	if !isOnQiniu {
+		log.Printf("[Qiniu] Domain %s is not on Qiniu, skipping sync", domain)
+		return ""
+	}
+
+	log.Printf("[Qiniu] Domain %s is on Qiniu, uploading certificate", domain)
+
+	// Get all existing certificates for this domain
+	existingCerts, _ := h.qiniuClient.GetCertificatesByDomain(ctx, domain)
+
+	// Upload new certificate
+	qiniuCertID, err := h.qiniuClient.UploadCertificate(ctx, domain, domain, keyPEM, certPEM)
+	if err != nil {
+		log.Printf("[Qiniu] Failed to upload certificate: %v", err)
+		return ""
+	}
+
+	log.Printf("[Qiniu] Certificate uploaded successfully: %s", qiniuCertID)
+
+	// If there were >= 2 existing certificates, delete the oldest one
+	if len(existingCerts) >= 2 {
+		// Find the certificate with the oldest createTime
+		var oldestCert *qiniu.CertificateInfo
+		for i := range existingCerts {
+			if oldestCert == nil || existingCerts[i].CreateTime < oldestCert.CreateTime {
+				oldestCert = &existingCerts[i]
+			}
+		}
+
+		if oldestCert != nil && oldestCert.CertID != qiniuCertID {
+			if err := h.qiniuClient.Delete(ctx, oldestCert.CertID); err != nil {
+				log.Printf("[Qiniu] Warning: Failed to delete oldest certificate %s: %v", oldestCert.CertID, err)
+			} else {
+				log.Printf("[Qiniu] Oldest certificate deleted: %s (createTime: %d)", oldestCert.CertID, oldestCert.CreateTime)
+			}
+		}
+	}
+
+	return qiniuCertID
 }
 
 // CheckCertificateExpiry checks the expiry status of a certificate

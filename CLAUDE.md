@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目概述
 
-这是一个部署在腾讯云 SCF（云函数）的自动化 Let's Encrypt 证书管理项目。使用**纯 Go ACMEv2 实现**（基于 go-acme/lego），通过 DNS-01 挑战配合 DNSPod API 申请证书，然后上传到腾讯云 SSL 证书服务，可部署到 CDN、CLB、API 网关等资源。
+这是一个部署在腾讯云 SCF（云函数）的自动化 Let's Encrypt 证书管理项目。使用**纯 Go ACMEv2 实现**（基于 go-acme/lego），通过 DNS-01 挑战配合 DNSPod API 申请证书，然后上传到腾讯云 SSL 证书服务，可部署到 CDN、CLB、API 网关等资源。**支持同步证书到七牛云 CDN**。
 
 ## 核心架构
 
@@ -18,6 +18,7 @@ pkg/acme/ (ACMEv2 协议实现 - 基于 lego)
 pkg/dns/ (DNS-01 挑战处理 - DNSPod 集成)
 pkg/cert/ (证书存储、验证、过期检查)
 pkg/ssl/ (腾讯云 SSL 证书服务)
+pkg/qiniu/ (七牛云证书同步)
 pkg/config/ (配置管理)
 pkg/domain/ (域名解析)
 pkg/notify/ (Webhook 通知)
@@ -38,6 +39,7 @@ ssl-manager/
 │   ├── dns/          # DNS 挑战处理 (DNSPod)
 │   ├── domain/       # 域名解析和处理
 │   ├── notify/       # Webhook 通知
+│   ├── qiniu/        # 七牛云证书同步客户端
 │   ├── response/     # API 响应结构
 │   └── ssl/          # 腾讯云 SSL 服务客户端
 ├── Makefile          # 构建脚本
@@ -120,6 +122,31 @@ ssl-manager/
 **证书验证函数：**
 - `ValidateCertificate(certPEM, keyPEM)` - 验证证书和私钥格式
 
+### pkg/qiniu - 七牛云证书同步
+
+| 文件 | 功能 |
+|------|------|
+| `types.go` | 七牛 API 类型定义 |
+| `client.go` | 七牛客户端（认证、HTTP 请求） |
+| `certificate.go` | 证书操作（上传、列表、删除） |
+
+**Client 关键方法：**
+| 方法 | 功能 |
+|---|---|
+| `NewClient(accessKey, secretKey)` | 创建七牛客户端 |
+| `IsEnabled()` | 检查客户端是否可用 |
+| `UploadCertificate(ctx, name, commonName, privateKey, certChain)` | 上传证书到七牛 |
+| `ListCertificates(ctx)` | 获取证书列表 |
+| `GetCertificateByDomain(ctx, domain)` | 根据域名查找证书 |
+| `IsDomainOnQiniu(ctx, domain)` | 检查域名是否在七牛上使用 |
+| `DeleteCertificate(ctx, certID)` | 删除证书 |
+
+**七牛证书同步流程：**
+1. 检查七牛客户端是否配置（`QINIU_ACCESS_KEY` 和 `QINIU_SECRET_KEY`）
+2. 调用 `IsDomainOnQiniu()` 检查域名是否在七牛上使用（通过检查证书列表的 DNSNames）
+3. 如果在七牛上，上传新证书
+4. 删除旧的七牛证书（如果存在）
+
 ### pkg/domain - 域名解析
 
 | 文件 | 功能 |
@@ -165,13 +192,14 @@ ssl-manager/
 
 | 方法 | 功能 |
 |---|---|
-| `IssueCertificate(ctx, domain, extraDomains)` | 申请证书并上传到腾讯云 |
+| `IssueCertificate(ctx, domain, extraDomains)` | 申请证书并上传到腾讯云（可选同步到七牛） |
 | `IssueCertificateLocal(ctx, domain, extraDomains)` | 本地申请证书（不上传），返回证书路径和 PEM 内容 |
-| `RenewCertificate(ctx, domain, force)` | 续期证书 |
+| `RenewCertificate(ctx, domain, force)` | 续期证书（可选同步到七牛） |
 | `ListCertificates(ctx, searchDomain)` | 列出证书 |
 | `UploadCertificate(ctx, domain, certDir)` | 上传已有证书 |
 | `DeployCertificate(ctx, domain, resourceType, resourceIDs)` | 部署证书 |
 | `CheckAndRenew(ctx)` | 检查并自动续期 |
+| `syncToQiniu(ctx, domain, certPEM, keyPEM)` | 同步证书到七牛（内部方法） |
 
 ## ACME 证书申请流程
 
@@ -259,6 +287,8 @@ make scf-package       # 打包 SCF 部署包
 | `CERT_EXPIRY_WARNING_DAYS` | 证书过期预警天数 | `30` |
 | `NOTIFY_ENABLED` | 启用 Webhook 通知 | `false` |
 | `NOTIFY_WEBHOOK` | Webhook URL | - |
+| `QINIU_ACCESS_KEY` | 七牛云 AccessKey（可选） | - |
+| `QINIU_SECRET_KEY` | 七牛云 SecretKey（可选） | - |
 
 ### SCF 环境约束
 
@@ -295,6 +325,7 @@ make scf-package       # 打包 SCF 部署包
 
 - `github.com/go-acme/lego/v4` - ACMEv2 协议实现
 - `github.com/tencentcloud/tencentcloud-sdk-go` - 腾讯云 Go SDK
+- `github.com/qiniu/go-sdk/v7` - 七牛云 Go SDK（用于证书同步）
 
 ## 构建目标
 

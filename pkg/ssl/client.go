@@ -306,9 +306,16 @@ func (c *Client) TransferCertificateInstancesWithPoll(
 	startTime := time.Now()
 
 	for {
-		// Check timeout
+		// Check timeout - return success since API didn't return error (task submitted)
 		if time.Since(startTime) > pollCfg.Timeout {
-			return nil, fmt.Errorf("timeout waiting for DeployRecordId")
+			log.Printf("[Deploy] Timeout waiting for DeployRecordId, but task may still be processing")
+			return &TransferResult{
+				Success:   true,
+				OldCertID: oldCertID,
+				NewCertID: newCertID,
+				Status:    "timeout",
+				Message:   "Timeout waiting for DeployRecordId, but task may still be processing",
+			}, nil
 		}
 
 		response, err := c.client.UpdateCertificateInstance(request)

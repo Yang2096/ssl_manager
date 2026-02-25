@@ -415,6 +415,19 @@ func (h *CertificateHandler) syncToQiniu(ctx context.Context, domain, certPEM, k
 
 	log.Printf("[Qiniu] Domain %s is on Qiniu, uploading certificate", domain)
 
+	// Get domain info to check current certificate in use
+	domainInfo, err := h.qiniuClient.GetDomainInfo(ctx, domain)
+	if err != nil {
+		log.Printf("[Qiniu] Warning: Failed to get domain info: %v", err)
+		// Continue anyway, we just won't have the current cert info
+	}
+
+	var currentCertID string
+	if domainInfo != nil && domainInfo.Https != nil {
+		currentCertID = domainInfo.Https.CertID
+		log.Printf("[Qiniu] Current certificate in use: %s", currentCertID)
+	}
+
 	// Upload new certificate
 	qiniuCertID, err := h.qiniuClient.UploadCertificate(ctx, domain, domain, keyPEM, certPEM)
 	if err != nil {
@@ -424,7 +437,13 @@ func (h *CertificateHandler) syncToQiniu(ctx context.Context, domain, certPEM, k
 
 	log.Printf("[Qiniu] Certificate uploaded successfully: %s", qiniuCertID)
 
-	// If there were >= 2 existing certificates, delete the oldest one
+	// Enable HTTPS for the domain with the new certificate
+	if err := h.qiniuClient.SSLize(ctx, domain, qiniuCertID); err != nil {
+		log.Printf("[Qiniu] Warning: Failed to enable HTTPS: %v", err)
+		// Don't fail, certificate is uploaded
+	}
+
+	// If there were >= 2 existing certificates, delete the oldest one (if not in use)
 	if len(existingCerts) >= 2 {
 		// Find the certificate with the oldest createTime
 		var oldestCert *qiniu.CertificateInfo
@@ -435,10 +454,15 @@ func (h *CertificateHandler) syncToQiniu(ctx context.Context, domain, certPEM, k
 		}
 
 		if oldestCert != nil && oldestCert.CertID != qiniuCertID {
-			if err := h.qiniuClient.Delete(ctx, oldestCert.CertID); err != nil {
-				log.Printf("[Qiniu] Warning: Failed to delete oldest certificate %s: %v", oldestCert.CertID, err)
+			// Check if the oldest certificate is currently in use
+			if oldestCert.CertID == currentCertID {
+				log.Printf("[Qiniu] Skipping deletion of oldest certificate %s: currently in use by domain", oldestCert.CertID)
 			} else {
-				log.Printf("[Qiniu] Oldest certificate deleted: %s (createTime: %d)", oldestCert.CertID, oldestCert.CreateTime)
+				if err := h.qiniuClient.Delete(ctx, oldestCert.CertID); err != nil {
+					log.Printf("[Qiniu] Warning: Failed to delete oldest certificate %s: %v", oldestCert.CertID, err)
+				} else {
+					log.Printf("[Qiniu] Oldest certificate deleted: %s (createTime: %d)", oldestCert.CertID, oldestCert.CreateTime)
+				}
 			}
 		}
 	}

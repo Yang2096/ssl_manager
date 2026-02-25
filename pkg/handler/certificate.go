@@ -283,12 +283,18 @@ func (h *CertificateHandler) RenewCertificate(ctx context.Context, domain string
 		resourceTypes, resourceTypesRegions := convertResourceConfigs(resourceConfigs)
 		log.Printf("Resource types for %s: %v", domain, resourceTypes)
 
-		transferResult, transferErr := h.sslClient.TransferCertificateInstances(
+		// Use polling version to wait for deployment task creation
+		transferResult, transferErr := h.sslClient.TransferCertificateInstancesWithPoll(
 			ctx,
 			oldCertID,
 			newCertID,
 			resourceTypes,
 			resourceTypesRegions,
+			&sslClient.PollConfig{
+				InitialInterval:  h.cfg.DeployPollInitialInterval,
+				ProgressInterval: h.cfg.DeployPollProgressInterval,
+				Timeout:          h.cfg.DeployPollTimeout,
+			},
 		)
 
 		if transferErr != nil {

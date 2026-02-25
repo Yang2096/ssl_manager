@@ -38,6 +38,11 @@ type Config struct {
 	// Qiniu settings (optional - for certificate sync to Qiniu CDN)
 	QiniuAccessKey string
 	QiniuSecretKey string
+
+	// Deployment polling settings
+	DeployPollInitialInterval  time.Duration // Interval for waiting DeployRecordId (default: 1s)
+	DeployPollProgressInterval time.Duration // Interval for polling progress (default: 1s)
+	DeployPollTimeout          time.Duration // Total timeout (default: 100s)
 }
 
 // AcmeConfig holds ACME-specific path configurations
@@ -56,16 +61,19 @@ type AcmeConfig struct {
 // DefaultConfig returns a configuration with default values
 func DefaultConfig() *Config {
 	return &Config{
-		TencentRegion:         "ap-guangzhou",
-		ACMEServer:           "https://acme-v02.api.letsencrypt.org/directory",
-		ACMEStaging:          false,
-		ACMEHomeDir:          "/tmp/acme",
-		ACMEAccountEmail:     "admin@example.com",
-		ACMEDNSPropagation:   60 * time.Second,
-		ACMEDNSTimeout:       10 * time.Second,
-		CertKeySize:          2048,
-		CertExpiryWarningDays: 30,
-		NotifyEnabled:        false,
+		TencentRegion:              "ap-guangzhou",
+		ACMEServer:                 "https://acme-v02.api.letsencrypt.org/directory",
+		ACMEStaging:                false,
+		ACMEHomeDir:                "/tmp/acme",
+		ACMEAccountEmail:           "admin@example.com",
+		ACMEDNSPropagation:         60 * time.Second,
+		ACMEDNSTimeout:             10 * time.Second,
+		CertKeySize:                2048,
+		CertExpiryWarningDays:      30,
+		NotifyEnabled:              false,
+		DeployPollInitialInterval:  1 * time.Second,
+		DeployPollProgressInterval: 1 * time.Second,
+		DeployPollTimeout:          100 * time.Second,
 	}
 }
 

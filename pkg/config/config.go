@@ -82,6 +82,23 @@ func Load() (*Config, error) {
 		log.Printf("Qiniu integration enabled")
 	}
 
+	// Deployment polling settings
+	if interval := getEnv("DEPLOY_POLL_INITIAL_INTERVAL", ""); interval != "" {
+		if seconds, err := strconv.Atoi(interval); err == nil && seconds > 0 {
+			cfg.DeployPollInitialInterval = time.Duration(seconds) * time.Second
+		}
+	}
+	if interval := getEnv("DEPLOY_POLL_PROGRESS_INTERVAL", ""); interval != "" {
+		if seconds, err := strconv.Atoi(interval); err == nil && seconds > 0 {
+			cfg.DeployPollProgressInterval = time.Duration(seconds) * time.Second
+		}
+	}
+	if timeout := getEnv("DEPLOY_POLL_TIMEOUT", ""); timeout != "" {
+		if seconds, err := strconv.Atoi(timeout); err == nil && seconds > 0 {
+			cfg.DeployPollTimeout = time.Duration(seconds) * time.Second
+		}
+	}
+
 	return cfg, nil
 }
 

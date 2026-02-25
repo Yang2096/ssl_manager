@@ -243,6 +243,22 @@ type TransferResult struct {
 	Message        string `json:"message"`
 }
 
+// PollConfig holds configuration for polling deployment progress
+type PollConfig struct {
+	InitialInterval  time.Duration // Interval for waiting DeployRecordId (default: 1s)
+	ProgressInterval time.Duration // Interval for polling progress (default: 1s)
+	Timeout          time.Duration // Total timeout (default: 100s)
+}
+
+// DefaultPollConfig returns the default polling configuration
+func DefaultPollConfig() *PollConfig {
+	return &PollConfig{
+		InitialInterval:  1 * time.Second,
+		ProgressInterval: 1 * time.Second,
+		Timeout:          100 * time.Second,
+	}
+}
+
 // containsDomain checks if certDomain matches or contains the search domain
 func containsDomain(certDomain, searchDomain string) bool {
 	// For wildcard certificates
@@ -255,63 +271,90 @@ func containsDomain(certDomain, searchDomain string) bool {
 	return false
 }
 
-// TransferCertificateInstances transfers resource associations from old certificate to new certificate
+// TransferCertificateInstancesWithPoll transfers certificate instances with polling for DeployRecordId
 // Uses UpdateCertificateInstance API with OldCertificateId and CertificateId parameters
 // This supports all resource types (cdn, clb, waf, etc.) unlike UploadUpdateCertificateInstance
-func (c *Client) TransferCertificateInstances(
+// Polls until DeployRecordId > 0 (task creation complete) and returns the result
+func (c *Client) TransferCertificateInstancesWithPoll(
 	ctx context.Context,
 	oldCertID string,
 	newCertID string,
 	resourceTypes []string,
 	resourceTypesRegions []*ssl.ResourceTypeRegions,
+	pollCfg *PollConfig,
 ) (*TransferResult, error) {
-	log.Printf("Transferring certificate instances from %s to %s", oldCertID, newCertID)
-
-	// Default resource types if not specified
-	if len(resourceTypes) == 0 {
-		resourceTypes = []string{"cdn", "clb", "waf", "live", "ddos", "teo", "apigateway", "vod", "tke", "tcb", "tse", "cos"}
+	if pollCfg == nil {
+		pollCfg = DefaultPollConfig()
 	}
-	log.Printf("Resource types for transfer: %v", resourceTypes)
 
+	log.Printf("[Deploy] Starting deployment: oldCert=%s, newCert=%s", oldCertID, newCertID)
+
+	// Build request
 	request := ssl.NewUpdateCertificateInstanceRequest()
 	request.OldCertificateId = common.StringPtr(oldCertID)
 	request.CertificateId = common.StringPtr(newCertID)
 	request.ResourceTypes = common.StringPtrs(resourceTypes)
 
-	// Set resource types regions if provided
 	if len(resourceTypesRegions) > 0 {
 		request.ResourceTypesRegions = resourceTypesRegions
-		log.Printf("Resource types regions for transfer: %+v", resourceTypesRegions)
+		log.Printf("[Deploy] Resource types regions: %+v", resourceTypesRegions)
 	}
 
-	response, err := c.client.UpdateCertificateInstance(request)
-	if err != nil {
-		log.Printf("Failed to transfer certificate instances: %v", err)
-		return &TransferResult{
-			Success:   false,
-			OldCertID: oldCertID,
-			NewCertID: newCertID,
-			Status:    "failed",
-			Message:   err.Error(),
-		}, err
+	// Poll until DeployRecordId > 0 (task creation complete)
+	var deployRecordID uint64
+	var lastRequestID string
+	startTime := time.Now()
+
+	for {
+		// Check timeout
+		if time.Since(startTime) > pollCfg.Timeout {
+			return nil, fmt.Errorf("timeout waiting for DeployRecordId")
+		}
+
+		response, err := c.client.UpdateCertificateInstance(request)
+		if err != nil {
+			log.Printf("[Deploy] Failed to call UpdateCertificateInstance: %v", err)
+			return &TransferResult{
+				Success:   false,
+				OldCertID: oldCertID,
+				NewCertID: newCertID,
+				Status:    "failed",
+				Message:   err.Error(),
+			}, err
+		}
+
+		if response.Response.RequestId != nil {
+			lastRequestID = *response.Response.RequestId
+		}
+
+		// Check DeployRecordId
+		if response.Response.DeployRecordId != nil {
+			deployRecordID = *response.Response.DeployRecordId
+		}
+
+		if deployRecordID > 0 {
+			log.Printf("[Deploy] RequestId=%s, DeployRecordId=%d (task created)", lastRequestID, deployRecordID)
+			break
+		}
+
+		log.Printf("[Deploy] RequestId=%s, DeployRecordId=0 (task creating...)", lastRequestID)
+
+		// Wait before retrying
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(pollCfg.InitialInterval):
+		}
 	}
 
-	// Log full response for debugging
-	log.Printf("UpdateCertificateInstance response: %s", response.ToJsonString())
-
-	deployRecordID := ""
-	if response.Response.DeployRecordId != nil {
-		deployRecordID = fmt.Sprintf("%d", *response.Response.DeployRecordId)
-	}
-
-	log.Printf("Certificate instances transferred successfully: DeployRecordId=%s", deployRecordID)
+	log.Printf("[Deploy] Certificate instances transferred successfully")
 	return &TransferResult{
 		Success:        true,
 		OldCertID:      oldCertID,
 		NewCertID:      newCertID,
-		DeployRecordID: deployRecordID,
+		DeployRecordID: fmt.Sprintf("%d", deployRecordID),
 		Status:         "success",
-		Message:        "Certificate instances transferred successfully",
+		Message:        "Certificate instances transfer initiated",
 	}, nil
 }
 

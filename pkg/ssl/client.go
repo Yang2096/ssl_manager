@@ -296,6 +296,9 @@ func (c *Client) TransferCertificateInstances(
 		}, err
 	}
 
+	// Log full response for debugging
+	log.Printf("UpdateCertificateInstance response: %s", response.ToJsonString())
+
 	deployRecordID := ""
 	if response.Response.DeployRecordId != nil {
 		deployRecordID = fmt.Sprintf("%d", *response.Response.DeployRecordId)

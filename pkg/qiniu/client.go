@@ -151,3 +151,38 @@ func logResponseDetails(resp *http.Response, body []byte, duration time.Duration
 		log.Printf("[Qiniu] Response: %s", string(body))
 	}
 }
+
+// GetDomainInfo gets information for a specific domain
+func (c *Client) GetDomainInfo(ctx context.Context, domainName string) (*DomainInfo, error) {
+	path := fmt.Sprintf("/domain/%s", domainName)
+	respBody, err := c.doRequest(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	var domainInfo DomainInfo
+	if err := json.Unmarshal(respBody, &domainInfo); err != nil {
+		return nil, fmt.Errorf("failed to parse domain info: %w", err)
+	}
+
+	return &domainInfo, nil
+}
+
+// SSLize enables HTTPS for a domain with the specified certificate
+func (c *Client) SSLize(ctx context.Context, domain string, certID string) error {
+	path := fmt.Sprintf("/domain/%s/sslize", domain)
+	req := &SSLizeRequest{
+		CertID:      certID,
+		ForceHttps:  true,
+		Http2Enable: true,
+		TlsVersion:  []string{"TLSv1.2", "TLSv1.3"},
+	}
+
+	_, err := c.doRequest(ctx, http.MethodPut, path, req)
+	if err != nil {
+		return fmt.Errorf("failed to enable HTTPS for domain %s: %w", domain, err)
+	}
+
+	log.Printf("[Qiniu] HTTPS enabled for domain %s with cert %s", domain, certID)
+	return nil
+}

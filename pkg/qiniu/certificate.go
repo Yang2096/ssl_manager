@@ -15,8 +15,8 @@ const (
 	DefaultListLimit = 100
 )
 
-// Upload uploads a certificate to Qiniu
-func (c *Client) Upload(ctx context.Context, req *UploadCertificateRequest) (string, error) {
+// upload uploads a certificate to Qiniu
+func (c *Client) upload(ctx context.Context, req *UploadCertificateRequest) (string, error) {
 	respBody, err := c.doRequest(ctx, "POST", CertificatesPath, req)
 	if err != nil {
 		return "", err
@@ -81,7 +81,7 @@ func (c *Client) UploadCertificate(ctx context.Context, name, commonName, privat
 		Pri:        privateKey,
 		Ca:         certChain,
 	}
-	return c.Upload(ctx, req)
+	return c.upload(ctx, req)
 }
 
 // GetCertificatesByDomain gets all certificates for a domain

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -77,6 +78,10 @@ func main() {
 		cli.listQiniuCommand(args)
 	case "delete-qiniu":
 		cli.deleteQiniuCommand(args)
+	case "domain-qiniu":
+		cli.domainQiniuCommand(args)
+	case "sslize-qiniu":
+		cli.sslizeQiniuCommand(args)
 	case "check":
 		cli.checkCommand(args)
 	case "upload":
@@ -418,6 +423,92 @@ func (c *CLI) deleteQiniuCommand(args []string) {
 	fmt.Printf("Certificate %s deleted successfully from Qiniu!\n", certID)
 }
 
+func (c *CLI) domainQiniuCommand(args []string) {
+	if len(args) < 1 {
+		fmt.Println("Usage: ssl-manager domain-qiniu <domain>")
+		os.Exit(1)
+	}
+
+	domain := args[0]
+
+	// Check Qiniu credentials
+	accessKey := os.Getenv("QINIU_ACCESS_KEY")
+	secretKey := os.Getenv("QINIU_SECRET_KEY")
+
+	if accessKey == "" || secretKey == "" {
+		fmt.Println("Qiniu client is not configured.")
+		fmt.Println("Please set QINIU_ACCESS_KEY and QINIU_SECRET_KEY")
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	qiniuClient, err := qiniu.NewClient(accessKey, secretKey)
+	if err != nil {
+		log.Fatalf("Failed to create Qiniu client: %v", err)
+	}
+
+	domainInfo, err := qiniuClient.GetDomainInfo(ctx, domain)
+	if err != nil {
+		log.Fatalf("Failed to get domain info: %v", err)
+	}
+
+	// Output domain information (key fields + full HTTPS config)
+	fmt.Printf("Domain: %s\n", domainInfo.Name)
+	fmt.Printf("Type: %s | Platform: %s | Protocol: %s\n", domainInfo.Type, domainInfo.Platform, domainInfo.Protocol)
+	fmt.Printf("CNAME: %s\n", domainInfo.CName)
+	fmt.Printf("Geo Cover: %s\n", domainInfo.GeoCover)
+	fmt.Printf("State: %s (%s)\n", domainInfo.OperatingState, domainInfo.OperatingStateDesc)
+	fmt.Printf("Created: %s | Modified: %s\n", domainInfo.CreateAt, domainInfo.ModifyAt)
+
+	// Output full HTTPS config
+	if domainInfo.Https != nil {
+		fmt.Println("\nHTTPS Configuration:")
+		httpsJSON, err := json.MarshalIndent(domainInfo.Https, "", "  ")
+		if err != nil {
+			log.Fatalf("Failed to format HTTPS config: %v", err)
+		}
+		fmt.Println(string(httpsJSON))
+	} else {
+		fmt.Println("\nHTTPS Configuration: (disabled)")
+	}
+}
+
+func (c *CLI) sslizeQiniuCommand(args []string) {
+	if len(args) < 2 {
+		fmt.Println("Usage: ssl-manager sslize-qiniu <domain> <cert-id>")
+		os.Exit(1)
+	}
+
+	domain := args[0]
+	certID := args[1]
+
+	// Check Qiniu credentials
+	accessKey := os.Getenv("QINIU_ACCESS_KEY")
+	secretKey := os.Getenv("QINIU_SECRET_KEY")
+
+	if accessKey == "" || secretKey == "" {
+		fmt.Println("Qiniu client is not configured.")
+		fmt.Println("Please set QINIU_ACCESS_KEY and QINIU_SECRET_KEY")
+		os.Exit(1)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	qiniuClient, err := qiniu.NewClient(accessKey, secretKey)
+	if err != nil {
+		log.Fatalf("Failed to create Qiniu client: %v", err)
+	}
+
+	if err := qiniuClient.SSLize(ctx, domain, certID); err != nil {
+		log.Fatalf("Failed to enable HTTPS: %v", err)
+	}
+
+	fmt.Printf("HTTPS enabled for domain %s with certificate %s\n", domain, certID)
+}
+
 func (c *CLI) checkCommand(args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -486,6 +577,8 @@ func printHelp() {
 	fmt.Println("  list        List certificates on Tencent Cloud")
 	fmt.Println("  list-qiniu    List certificates on Qiniu Cloud")
 	fmt.Println("  delete-qiniu  Delete a certificate from Qiniu Cloud by cert-id")
+	fmt.Println("  domain-qiniu  Get domain info from Qiniu Cloud")
+	fmt.Println("  sslize-qiniu  Enable HTTPS for a Qiniu domain with a certificate")
 	fmt.Println("  check       Check and auto-renew expiring certificates")
 	fmt.Println("  upload      Upload an existing certificate to Tencent Cloud")
 	fmt.Println("  help        Show this help message")

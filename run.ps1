@@ -16,4 +16,4 @@ if (Test-Path $envFile) {
 }
 
 # 运行 cli.exe 并传递所有参数
-& (Join-Path $PSScriptRoot "cli.exe") list
+& (Join-Path $PSScriptRoot "cli.exe") @args
